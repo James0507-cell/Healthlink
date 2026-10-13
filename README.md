@@ -242,7 +242,8 @@ used there — with no `DATABASE_URL` the deployed app would fail on its first w
 
 On Vercel:
 
-1. Push the repository and import it as a project. The Next.js defaults need no changes.
+1. Push the repository and import it as a project. The Next.js defaults need no changes;
+   `vercel.json` and `package.json` pin the build settings and the Node version.
 2. Create a Postgres database (Neon and Vercel Postgres both work) and copy its **pooled** connection
    string.
 3. Set two environment variables in the project settings:
@@ -260,6 +261,10 @@ On Vercel:
 
 `HEALTHLINK_SECRET` must be set. Without it the app falls back to the development default that is
 published in this repository, and session cookies could be forged.
+
+The Node version matters: `node:sqlite` was added in Node 22.5, so `package.json` declares
+`engines.node >= 22.5.0` and `.nvmrc` pins 22. A host that builds on Node 20 would fail on the
+SQLite import — even though the deployed app uses Postgres, the module is still referenced.
 
 Region choice matters more than it looks: keep the database and the functions in the same region.
 A serverless function in one region querying a database on another continent turns every page render
