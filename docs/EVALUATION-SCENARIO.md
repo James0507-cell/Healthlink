@@ -516,18 +516,27 @@ demonstration data.
 The demonstration dataset already contains six referrals at different points in the workflow. They
 exist so that a participant can start from any stage without having to build it first.
 
-| Referral | Patient | Route | State | Why it is useful |
-| --- | --- | --- | --- | --- |
-| `HL-2026-BUH-00001` | Rosario Maquiling | Buhangin DHC → Synapse | Awaiting information | Shows the loop going *backwards*: diabetes with an out-of-date work-up |
-| `HL-2026-BUH-00002` | Danilo Fuentes | Buhangin DHC → DMGMC | Under review | Smear-positive TB awaiting a pulmonology decision |
-| `HL-2026-AGD-00001` | Jomar Sarmiento | Agdao CHC → DMGMC | Closed with feedback | A complete loop, dengue with warning signs |
-| `HL-2026-AGD-00002` | Michelle Tan | Agdao CHC → Synapse | Submitted | Urgent maternal referral, pre-eclampsia at 35 weeks |
-| `HL-2026-AGD-00003` | Teresita Caballero | Agdao CHC → DDILC | Draft | An unrouted referral — good for demonstrating the routing checklist |
-| `HL-2026-TAL-00001` | Rodel Dela Peña | Talomo FCC → Synapse | Completed | Emergency STEMI transfer; outcome recorded, loop not yet acknowledged |
+Tracking codes are **deterministic** for seeded referrals — they do not change when you run
+`npm run db:reset` — so the values below stay valid and you can print this table.
+
+| Referral | Tracking code | Patient | Route | State | Why it is useful |
+| --- | --- | --- | --- | --- | --- |
+| `HL-2026-BUH-00001` | `TPGYW-Z8W4C` | Rosario Maquiling | Buhangin DHC → Synapse | Awaiting information | Shows the loop going *backwards*: diabetes with an out-of-date work-up |
+| `HL-2026-BUH-00002` | `NX7PX-2TA9V` | Danilo Fuentes | Buhangin DHC → DMGMC | Under review | Smear-positive TB awaiting a pulmonology decision |
+| `HL-2026-AGD-00001` | `9GMR2-7ZZYV` | Jomar Sarmiento | Agdao CHC → DMGMC | Closed with feedback | A complete loop, dengue with warning signs |
+| `HL-2026-AGD-00002` | `BGXF5-YQT3G` | Michelle Tan | Agdao CHC → Synapse | Submitted | Urgent maternal referral, pre-eclampsia at 35 weeks |
+| `HL-2026-AGD-00003` | `94HEC-WTQ2H` | Teresita Caballero | Agdao CHC → DDILC | Draft | An unrouted referral — good for demonstrating the routing checklist |
+| `HL-2026-TAL-00001` | `PJ5F4-G2X8J` | Rodel Dela Peña | Talomo FCC → Synapse | Completed | Emergency STEMI transfer; outcome recorded, loop not yet acknowledged |
+
+> Confirm these at any time with `npm run demo:state`, which prints every referral with its tracking
+> code. If the codes differ from the table, the database was seeded before a change to the generator:
+> run `npm run db:reset`.
 
 **Where the chest pain case fits.** Mr. Abad's case above is *not* among them, because the point of
 the walkthrough is for the participant to build it. It is a fresh referral created during the
-session, which is how the Chapter 3 task-based walkthrough is described.
+session, which is how the Chapter 3 task-based walkthrough is described. Referrals created at runtime
+receive a **randomly generated** tracking code, so quote the one shown on screen rather than this
+table.
 
 If time is short and you need a shortcut, `HL-2026-TAL-00001` (Rodel Dela Peña) is already an acute
 chest pain case at the **Completed** stage — the receiving facility has returned its discharge

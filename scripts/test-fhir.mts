@@ -844,6 +844,61 @@ if (revocable) {
   check("The revocation is audited", (revokeAudit?.n ?? 0) > 0, `matching events: ${revokeAudit?.n}`);
 }
 
+/* --- 21. Seeded tracking codes are stable and documented --- */
+// The evaluation scenario document quotes exact tracking codes. If the generator
+// changes, those quoted values become wrong and a facilitator would find that the
+// public lookup returns nothing. This asserts stability against the documented set.
+const DOCUMENTED_CODES: Record<string, string> = {
+  "HL-2026-BUH-00001": "TPGYW-Z8W4C",
+  "HL-2026-BUH-00002": "NX7PX-2TA9V",
+  "HL-2026-AGD-00001": "9GMR2-7ZZYV",
+  "HL-2026-AGD-00002": "BGXF5-YQT3G",
+  "HL-2026-AGD-00003": "94HEC-WTQ2H",
+  "HL-2026-TAL-00001": "PJ5F4-G2X8J",
+};
+
+const seededCodes = all<{ referral_number: string; tracking_code: string }>(
+  "SELECT referral_number, tracking_code FROM referrals",
+);
+check(
+  "Every seeded referral has a tracking code",
+  seededCodes.every((r) => /^[A-Z2-9]{5}-[A-Z2-9]{5}$/.test(r.tracking_code)),
+  seededCodes.filter((r) => !/^[A-Z2-9]{5}-[A-Z2-9]{5}$/.test(r.tracking_code)).map((r) => r.referral_number).join(", "),
+);
+check(
+  "Tracking codes are unique",
+  new Set(seededCodes.map((r) => r.tracking_code)).size === seededCodes.length,
+);
+
+const wrongCode = seededCodes.filter(
+  (r) => DOCUMENTED_CODES[r.referral_number] && DOCUMENTED_CODES[r.referral_number] !== r.tracking_code,
+);
+check(
+  "Seeded tracking codes match the values documented in the evaluation scenario",
+  wrongCode.length === 0,
+  wrongCode.length
+    ? `${wrongCode.map((r) => `${r.referral_number}: doc=${DOCUMENTED_CODES[r.referral_number]} actual=${r.tracking_code}`).join("; ")} — update docs/EVALUATION-SCENARIO.md`
+    : "",
+);
+
+// Public tracking lookups must resolve for the documented pairs.
+const { trackReferral } = await import("../src/lib/referrals");
+let lookupsResolved = 0;
+for (const [number, code] of Object.entries(DOCUMENTED_CODES)) {
+  if (trackReferral(number, code)) lookupsResolved++;
+}
+check(
+  "Every documented referral number and code pair resolves in the public lookup",
+  lookupsResolved === Object.keys(DOCUMENTED_CODES).length,
+  `${lookupsResolved}/${Object.keys(DOCUMENTED_CODES).length} resolved`,
+);
+
+// A wrong code must not resolve.
+check(
+  "A mismatched tracking code is refused",
+  !trackReferral("HL-2026-BUH-00001", "WRONG-CODE1"),
+);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (failures.length) {
   console.log("\nFailures:");
