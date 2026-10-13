@@ -1,0 +1,33 @@
+# Normalise line endings so the repository is consistent across platforms.
+#
+# Without this, a Windows checkout stores CRLF and a Linux/macOS checkout stores
+# LF, which produces spurious whole-file diffs whenever the two collaborate.
+# Text files are stored as LF in the repository and converted on checkout.
+
+* text=auto eol=lf
+
+# Windows-only scripts, if any are ever added, would go here with eol=crlf.
+
+# Binary assets must never be line-ending converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.docx binary
+*.xlsx binary
+*.pdf binary
+*.tgz binary
+*.zip binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+
+# Lockfiles are generated; keep them out of diffs and merge noise.
+package-lock.json -diff linguist-generated
+
+# Database files are git-ignored, but be explicit in case one is force-added.
+*.db binary
+*.db-wal binary
+*.db-shm binary

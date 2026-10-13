@@ -1,0 +1,33 @@
+{
+  "name": "healthlink",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HealthLink - An Interoperable Patient Referral and Health Information Exchange System for Davao City",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "typecheck": "tsc --noEmit",
+    "db:reset": "tsx scripts/db-reset.mts",
+    "test": "tsx scripts/test-fhir.mts",
+    "test:fhir": "tsx scripts/test-fhir.mts",
+    "demo:state": "tsx scripts/dump-demo-state.mts",
+    "terminology:check": "tsx scripts/check-terminology.mts"
+  },
+  "dependencies": {
+    "jose": "^6.2.12",
+    "next": "16.4.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^24.9.2",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.4",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

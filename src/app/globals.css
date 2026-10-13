@@ -1,0 +1,333 @@
+@import "tailwindcss";
+
+/* ================================================================== */
+/* HealthLink design tokens                                            */
+/*                                                                     */
+/* Canvas + white surfaces + hairline borders, one accent, restrained  */
+/* semantic colour. Tuned for long clinical reading sessions.          */
+/* ================================================================== */
+
+@theme {
+  /* Canvas & surfaces */
+  --color-canvas: #f4f4f2;
+
+  /* Warm neutral scale */
+  --color-ink-50: #fafaf9;
+  --color-ink-100: #f4f4f2;
+  --color-ink-200: #e8e8e4;
+  --color-ink-300: #d6d6d0;
+  --color-ink-400: #a8a8a0;
+  --color-ink-500: #78786f;
+  --color-ink-600: #57574f;
+  --color-ink-700: #3f3f39;
+  --color-ink-800: #262622;
+  --color-ink-900: #1a1a17;
+  --color-ink-950: #0d0d0b;
+
+  /* Accent */
+  --color-brand-50: #ecfdf5;
+  --color-brand-100: #d1fae5;
+  --color-brand-200: #a7f3d0;
+  --color-brand-300: #6ee7b7;
+  --color-brand-400: #34d399;
+  --color-brand-500: #10b981;
+  --color-brand-600: #059669;
+  --color-brand-700: #047857;
+  --color-brand-800: #065f46;
+  --color-brand-900: #064e3b;
+  --color-brand-950: #022c22;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+
+  --radius-card: 0.875rem;
+  --shadow-card: 0 1px 2px 0 rgb(16 16 12 / 0.04), 0 1px 3px -1px rgb(16 16 12 / 0.03);
+  --shadow-pop: 0 4px 6px -1px rgb(16 16 12 / 0.06), 0 12px 28px -8px rgb(16 16 12 / 0.14);
+}
+
+/* ================================================================== */
+/* Base                                                                */
+/* ================================================================== */
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  @apply bg-canvas font-sans text-ink-900 antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+*:focus-visible {
+  @apply outline-2 outline-offset-2 outline-brand-600;
+}
+
+::selection {
+  @apply bg-brand-100 text-brand-900;
+}
+
+/* ================================================================== */
+/* Buttons                                                             */
+/* ================================================================== */
+
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-[13px] font-medium
+         whitespace-nowrap transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-45;
+}
+
+/* Primary CTA: near-black, as the reference designs use. */
+@utility btn-primary {
+  @apply btn bg-ink-900 text-white shadow-xs hover:bg-ink-800 active:scale-[0.985];
+}
+
+/* Accent: for the affirmative action of a screen. */
+@utility btn-accent {
+  @apply btn bg-brand-600 text-white shadow-xs hover:bg-brand-700 active:scale-[0.985];
+}
+
+@utility btn-secondary {
+  @apply btn border border-ink-200 bg-white text-ink-800 shadow-xs hover:border-ink-300 hover:bg-ink-50;
+}
+
+@utility btn-ghost {
+  @apply btn text-ink-600 hover:bg-ink-100 hover:text-ink-900;
+}
+
+@utility btn-danger {
+  @apply btn bg-red-600 text-white shadow-xs hover:bg-red-700 active:scale-[0.985];
+}
+
+@utility btn-sm {
+  @apply gap-1.5 rounded-md px-2.5 py-1.5 text-xs;
+}
+
+@utility btn-lg {
+  @apply px-4 py-2.5 text-sm;
+}
+
+@utility btn-icon {
+  @apply btn h-8 w-8 rounded-lg p-0;
+}
+
+/* ================================================================== */
+/* Status pills                                                        */
+/* Soft tinted background, inset hairline, paired with a dot so state  */
+/* is never conveyed by colour alone.                                  */
+/* ================================================================== */
+
+@utility chip {
+  @apply inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5
+         text-[11px] font-medium leading-5 ring-1 ring-inset;
+}
+
+@utility chip-neutral {
+  @apply chip bg-ink-100 text-ink-700 ring-ink-200/70;
+}
+
+@utility chip-info {
+  @apply chip bg-sky-50 text-sky-700 ring-sky-200/70;
+}
+
+@utility chip-warn {
+  @apply chip bg-amber-50 text-amber-800 ring-amber-200/70;
+}
+
+@utility chip-positive {
+  @apply chip bg-brand-50 text-brand-800 ring-brand-200/70;
+}
+
+@utility chip-critical {
+  @apply chip bg-red-50 text-red-700 ring-red-200/70;
+}
+
+@utility chip-done {
+  @apply chip bg-ink-200/70 text-ink-800 ring-ink-300/60;
+}
+
+/* ================================================================== */
+/* Form controls                                                       */
+/* ================================================================== */
+
+@utility label {
+  @apply mb-1.5 block text-[12px] font-medium text-ink-700;
+}
+
+@utility input {
+  @apply w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-[13px] text-ink-900
+         shadow-xs transition-colors placeholder:text-ink-400
+         hover:border-ink-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15
+         disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-500;
+}
+
+@utility select {
+  @apply input cursor-pointer appearance-none bg-no-repeat pr-8;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%2378786f' stroke-width='1.6'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5'/%3E%3C/svg%3E");
+  background-position: right 0.6rem center;
+  background-size: 1rem;
+}
+
+@utility textarea {
+  @apply input leading-relaxed;
+}
+
+@utility field-hint {
+  @apply mt-1 text-[11px] leading-relaxed text-ink-500;
+}
+
+/* ================================================================== */
+/* Surfaces                                                            */
+/* ================================================================== */
+
+@utility card {
+  @apply rounded-card border border-ink-200/90 bg-white shadow-card;
+}
+
+@utility card-header {
+  @apply flex items-start justify-between gap-3 px-4 py-3.5;
+}
+
+@utility card-body {
+  @apply px-4 pb-4;
+}
+
+@utility card-footer {
+  @apply border-t border-ink-200/80 px-4 py-2.5;
+}
+
+@utility card-title {
+  @apply text-[13px] font-semibold tracking-[-0.01em] text-ink-900;
+}
+
+@utility card-desc {
+  @apply mt-0.5 text-xs leading-relaxed text-ink-500;
+}
+
+@utility section-label {
+  @apply text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-400;
+}
+
+/* ================================================================== */
+/* Sidebar navigation                                                  */
+/* ================================================================== */
+
+@utility nav-item {
+  @apply relative flex items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-[13px] font-medium
+         text-ink-600 transition-colors duration-100 hover:bg-ink-100/80 hover:text-ink-900;
+}
+
+@utility nav-item-active {
+  @apply bg-white text-ink-900 shadow-xs ring-1 ring-ink-200/90;
+}
+
+@utility nav-badge {
+  @apply ml-auto rounded-full bg-ink-200/80 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums
+         leading-tight text-ink-600;
+}
+
+@utility nav-badge-active {
+  @apply bg-brand-600 text-white;
+}
+
+/* ================================================================== */
+/* Tables                                                              */
+/* ================================================================== */
+
+@utility table {
+  @apply w-full border-collapse text-[13px];
+}
+
+@utility table-head {
+  @apply border-b border-ink-200 bg-ink-50/60 px-3 py-2.5 text-left
+         text-[10px] font-semibold uppercase tracking-[0.07em] text-ink-500;
+}
+
+@utility table-cell {
+  @apply border-b border-ink-100 px-3 py-3 align-top;
+}
+
+/* ================================================================== */
+/* Segmented control (in-page filters)                                 */
+/* ================================================================== */
+
+@utility segmented {
+  @apply inline-flex items-center gap-0.5 rounded-lg border border-ink-200 bg-ink-100/70 p-0.5;
+}
+
+@utility segmented-item {
+  @apply rounded-[6px] px-2.5 py-1 text-xs font-medium text-ink-600 transition-colors hover:text-ink-900;
+}
+
+@utility segmented-item-active {
+  @apply bg-white text-ink-900 shadow-xs;
+}
+
+/* ================================================================== */
+/* Misc                                                                */
+/* ================================================================== */
+
+@utility mono-id {
+  @apply font-mono text-[11px] tracking-tight text-ink-500;
+}
+
+@utility code-block {
+  @apply overflow-x-auto rounded-lg border border-ink-800 bg-ink-950 p-3.5 font-mono
+         text-[11px] leading-[1.7] text-ink-100;
+}
+
+@utility form-section {
+  @apply mb-3.5 flex items-center gap-2 border-b border-ink-200 pb-2 text-[11px] font-semibold
+         uppercase tracking-[0.07em] text-ink-500;
+}
+
+@utility kbd {
+  @apply rounded border border-ink-200 bg-white px-1.5 py-0.5 font-sans text-[10px] font-medium text-ink-500;
+}
+
+@utility link {
+  @apply font-medium text-brand-700 underline-offset-2 hover:underline;
+}
+
+/* Composite element styles (plain CSS, not utilities) */
+
+.dl-clinical dt {
+  @apply mb-1 text-[10px] font-semibold uppercase tracking-[0.06em] text-ink-400;
+}
+
+.dl-clinical dd {
+  @apply mb-4 whitespace-pre-wrap text-[14px] leading-[1.7] text-ink-800 last:mb-0;
+}
+
+.thin-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-ink-300/70;
+}
+.thin-scroll::-webkit-scrollbar-thumb:hover {
+  @apply bg-ink-400;
+}
+
+/* A subtle vertical rule used between metric columns, as in the references. */
+.metric-divide > * + * {
+  @apply border-l border-ink-200 pl-5;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    @apply bg-white;
+  }
+  .card {
+    @apply border-ink-200 shadow-none;
+  }
+  .print-break {
+    break-before: page;
+  }
+}

@@ -1,0 +1,203 @@
+/**
+ * Audit trail export.
+ *
+ * Exports the audit log as CSV for a privacy office or a research appendix.
+ * Every export is itself audited, because an export removes data from the
+ * system's access controls.
+ */
+
+import { NextResponse, type NextRequest } from "next/server";
+import { getSession, hasPermission, PERMISSIONS } from "@/lib/auth";
+import { all, get, writeAudit } from "@/lib/db";
+import { auditOutcomeLabel } from "@/lib/fhir/audit-mapper";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+/** RFC 4180 CSV field escaping. */
+function csv(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const s = String(value);
+  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+export async function GET(request: NextRequest) {
+  const session = await getSession();
+
+  if (!session) {
+    return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+  }
+  if (!hasPermission(session, PERMISSIONS.AUDIT_EXPORT)) {
+    writeAudit({
+      action: "E",
+      eventType: "security",
+      eventSubtype: "audit-export-denied",
+      actorUserId: session.id,
+      actorName: session.fullName,
+      actorRole: session.role,
+      actorFacility: session.facilityId,
+      outcome: "8",
+      outcomeDesc: "Role lacks audit export permission",
+      description: `Audit export was refused: the role "${session.role}" does not include audit export.`,
+    });
+    return NextResponse.json({ error: "Your role cannot export the audit trail." }, { status: 403 });
+  }
+
+  const sp = request.nextUrl.searchParams;
+  const where: string[] = [];
+  const params: unknown[] = [];
+
+  // An administrator may only export their own facility; oversight roles may export all.
+  const crossFacility = session.role === "hie_admin" || session.role === "privacy_auditor";
+  if (!crossFacility && session.facilityId) {
+    where.push("a.actor_facility = ?");
+    params.push(session.facilityId);
+  }
+  if (sp.get("action")) {
+    where.push("a.action = ?");
+    params.push(sp.get("action"));
+  }
+  if (sp.get("event")) {
+    where.push("a.event_type = ?");
+    params.push(sp.get("event"));
+  }
+  const from = sp.get("from");
+  const to = sp.get("to");
+  if (from) {
+    where.push("a.occurred_at >= ?");
+    params.push(from);
+  }
+  if (to) {
+    where.push("a.occurred_at <= ?");
+    params.push(to);
+  }
+
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+  const rows = all<{
+    occurred_at: string;
+    action: string;
+    event_type: string;
+    event_subtype: string | null;
+    actor_name: string | null;
+    actor_role: string | null;
+    actor_facility: string | null;
+    patient_id: string | null;
+    referral_number: string | null;
+    entity_type: string | null;
+    entity_id: string | null;
+    outcome: string;
+    outcome_desc: string | null;
+    purpose_code: string | null;
+    description: string;
+    ip_address: string | null;
+    record_hash: string | null;
+  }>(
+    `SELECT a.occurred_at, a.action, a.event_type, a.event_subtype,
+            a.actor_name, a.actor_role, a.actor_facility,
+            a.patient_id, r.referral_number, a.entity_type, a.entity_id,
+            a.outcome, a.outcome_desc, a.purpose_code, a.description,
+            a.ip_address, a.record_hash
+       FROM audit_events a
+       LEFT JOIN referrals r ON r.id = a.referral_id
+     ${whereSql}
+     ORDER BY a.occurred_at ASC, a.rowid ASC`,
+    ...params,
+  );
+
+  const facilityNames = new Map(
+    all<{ id: string; name: string }>("SELECT id, name FROM facilities").map((f) => [f.id, f.name]),
+  );
+
+  const header = [
+    "occurred_at",
+    "action",
+    "event_type",
+    "event_subtype",
+    "actor_name",
+    "actor_role",
+    "actor_facility",
+    "patient_reference",
+    "referral_number",
+    "entity_type",
+    "entity_id",
+    "outcome",
+    "outcome_desc",
+    "purpose_of_use",
+    "description",
+    "ip_address",
+    "record_hash",
+  ];
+
+  const lines = [header.join(",")];
+  for (const r of rows) {
+    lines.push(
+      [
+        r.occurred_at,
+        r.action,
+        r.event_type,
+        r.event_subtype ?? "",
+        r.actor_name ?? "",
+        r.actor_role ?? "",
+        r.actor_facility ? (facilityNames.get(r.actor_facility) ?? r.actor_facility) : "",
+        // Patient identifiers are deliberately pseudonymised in the export.
+        r.patient_id ? `pseudonymised:${r.patient_id.slice(-8)}` : "",
+        r.referral_number ?? "",
+        r.entity_type ?? "",
+        r.entity_id ?? "",
+        auditOutcomeLabel(r.outcome),
+        r.outcome_desc ?? "",
+        r.purpose_code ?? "",
+        r.description,
+        r.ip_address ?? "",
+        r.record_hash ?? "",
+      ]
+        .map(csv)
+        .join(","),
+    );
+  }
+
+  // Prepend a provenance header so an exported file is self-describing.
+  const provenance = [
+    `# HealthLink audit trail export`,
+    `# Generated: ${new Date().toISOString()}`,
+    `# Generated by: ${session.fullName} (${session.role})`,
+    `# Scope: ${crossFacility ? "all facilities" : (session.facilityName ?? "unknown facility")}`,
+    `# Records: ${rows.length}`,
+    `# Note: patient identifiers are pseudonymised in this export. Patient names are not included.`,
+    `# Note: record_hash is the SHA-256 hash chaining this record to the previous one, permitting tamper detection.`,
+    "",
+  ].join("\r\n");
+
+  const body = provenance + lines.join("\r\n") + "\r\n";
+
+  writeAudit({
+    action: "R",
+    eventType: "export",
+    eventSubtype: "audit-csv",
+    actorUserId: session.id,
+    actorName: session.fullName,
+    actorRole: session.role,
+    actorFacility: session.facilityId,
+    outcome: "0",
+    outcomeDesc: "Success",
+    purposeCode: "oversight",
+    description: `Exported ${rows.length} audit event(s) as CSV. Filters: ${sp.toString() || "(none)"}.`,
+    ipAddress: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? undefined,
+    userAgent: request.headers.get("user-agent") ?? undefined,
+  });
+
+  const stamp = new Date().toISOString().slice(0, 10);
+
+  return new NextResponse(body, {
+    status: 200,
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="healthlink-audit-${stamp}.csv"`,
+      "cache-control": "no-store",
+    },
+  });
+}
+
+void get;
