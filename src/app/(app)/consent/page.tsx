@@ -31,7 +31,7 @@ export default async function ConsentPage({
   const session = await requirePageAccess(PERMISSIONS.CONSENT_READ);
 
   const sp = await searchParams;
-  const consents = listConsents(session, { limit: 200 });
+  const consents = await listConsents(session, { limit: 200 });
   const filtered = sp.status ? consents.filter((c) => c.status === sp.status) : consents;
 
   const counts = {

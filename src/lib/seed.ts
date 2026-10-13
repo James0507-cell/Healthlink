@@ -13,7 +13,7 @@
  * names are fictional composites, not the real Davao City institutions.
  */
 
-import { hashPassword, newId, trackingCode, sha256, run, get, all, migrate, db, insert, writeAudit } from "./db";
+import { hashPassword, newId, trackingCode, sha256, run, get, all, migrate, insert, writeAudit, exec } from "./db";
 import { facilityShortCode, formatReferralNumber } from "./workflow";
 import { persistReferralBundle } from "./fhir-store";
 import { mappingInputFor, getReferralDetail } from "./referrals";
@@ -1195,14 +1195,14 @@ function systemKey(system: string): string {
   return system;
 }
 
-export function seed(opts: { reset?: boolean } = {}): SeedSummary {
-  migrate();
+export async function seed(opts: { reset?: boolean } = {}): Promise<SeedSummary> {
+  await migrate();
 
-  const database = db();
   if (opts.reset) {
+    // Depends on the active dialect: delete order is the same, but execution differs.
     // Deleted in dependency order: children before parents. fhir_resources
     // references users, so it must go before users as well as before facilities.
-    database.exec(`
+    await exec(`
       DELETE FROM audit_events;
       DELETE FROM api_tokens;
       DELETE FROM access_requests;
@@ -1223,7 +1223,7 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
       DELETE FROM system_settings;
     `);
   } else {
-    const existing = get<{ n: number }>("SELECT COUNT(*) AS n FROM facilities");
+    const existing = await get<{ n: number }>("SELECT COUNT(*) AS n FROM facilities");
     if (existing && existing.n > 0) {
       return summarise();
     }
@@ -1237,7 +1237,7 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
   for (const f of FACILITIES) {
     const id = newId("fac");
     facilityId.set(f.key, id);
-    insert("facilities", {
+    await insert("facilities", {
       id,
       nhfr_code: f.nhfr,
       hcpn_code: f.hcpn,
@@ -1274,7 +1274,7 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
   for (const u of USERS) {
     const id = newId("usr");
     userId.set(u.key, id);
-    insert("users", {
+    await insert("users", {
       id,
       email: u.email,
       password_salt: salt,
@@ -1299,7 +1299,7 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
   for (const p of PATIENTS) {
     const id = newId("pat");
     patientId.set(p.key, id);
-    insert("patients", {
+    await insert("patients", {
       id,
       local_mrn: p.mrn,
       philhealth_id: p.philhealth,
@@ -1360,7 +1360,7 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
     const consentStatus = s.status === "cancelled" ? "revoked" : "active";
     const seedPatient = PATIENTS.find((p) => p.key === s.patient);
     const patientDisplayName = seedPatient ? `${seedPatient.given} ${seedPatient.family}` : "Patient";
-    insert("consents", {
+    await insert("consents", {
       id: consentId,
       patient_id: pid,
       referral_id: refId,
@@ -1388,7 +1388,7 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
     const completedAt = s.timeline.find((t) => t.to === "completed") ? isoHoursAgo(totalHours - (s.timeline.find((t) => t.to === "completed")?.hoursAfter ?? 0)) : null;
     const closedAt = s.timeline.find((t) => t.to === "closed-feedback") ? isoHoursAgo(totalHours - (s.timeline.find((t) => t.to === "closed-feedback")?.hoursAfter ?? 0)) : null;
 
-    insert("referrals", {
+    await insert("referrals", {
       id: refId,
       referral_number: referralNumber,
       tracking_code: seedTrackingCode(referralNumber),
@@ -1455,8 +1455,8 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
     });
 
     // diagnoses
-    s.diagnoses.forEach((d, i) => {
-      run(
+    for (const [i, d] of s.diagnoses.entries()) {
+      await run(
         `INSERT INTO referral_diagnoses (id, referral_id, system, code, display, role, certainty, sequence)
          VALUES (?,?,?,?,?,?,?,?)`,
         newId("dx"),
@@ -1468,11 +1468,11 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
         d.certainty ?? "confirmed",
         i,
       );
-    });
+    }
 
     // observations
-    s.observations.forEach((o, i) => {
-      run(
+    for (const [i, o] of s.observations.entries()) {
+      await run(
         `INSERT INTO referral_observations (
            id, referral_id, system, code, display, category, value_num, value_text,
            unit, ucum_code, ref_low, ref_high, effective_at, sequence
@@ -1493,11 +1493,11 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
         i,
       );
       observationCount++;
-    });
+    }
 
     // medications
-    s.medications.forEach((m, i) => {
-      run(
+    for (const [i, m] of s.medications.entries()) {
+      await run(
         `INSERT INTO referral_medications (id, referral_id, medication, dose, route, frequency, status, sequence)
          VALUES (?,?,?,?,?,?,?,?)`,
         newId("med"),
@@ -1509,11 +1509,11 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
         "active",
         i,
       );
-    });
+    }
 
     // allergies
-    s.allergies.forEach((a, i) => {
-      run(
+    for (const [i, a] of s.allergies.entries()) {
+      await run(
         `INSERT INTO referral_allergies (id, referral_id, system, code, display, reaction, criticality, category, sequence)
          VALUES (?,?,?,?,?,?,?,?,?)`,
         newId("alg"),
@@ -1526,12 +1526,12 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
         a.category,
         i,
       );
-    });
+    }
 
     // clinical attachments
     const attachments = buildAttachments(s, refId, referralNumber);
     for (const att of attachments) {
-      run(
+      await run(
         `INSERT INTO referral_attachments (
            id, referral_id, title, doc_type_code, doc_type_display, content_type,
            size_bytes, content_text, author_user_id, created_at, sha256, fhir_docref_id, retention_until
@@ -1553,7 +1553,7 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
     }
 
     // timeline events (closed-loop audit of the workflow)
-    s.timeline.forEach((t, i) => {
+    for (const [i, t] of s.timeline.entries()) {
       const actorKey = t.actor && userId.has(t.actor) ? t.actor : null;
       const actorId = actorKey ? userId.get(actorKey) : null;
       const actorName = actorKey
@@ -1566,7 +1566,7 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
 
       const fromStatus = i === 0 ? null : s.timeline[i - 1].to;
 
-      run(
+      await run(
         `INSERT INTO referral_events (
            id, referral_id, sequence, from_status, to_status, action,
            fhir_task_status, business_status, actor_user_id, actor_name, actor_role,
@@ -1589,14 +1589,14 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
         t.fhirTaskVersion,
       );
       eventCount++;
-    });
+    }
 
     // feedback messages
     for (const f of s.feedback ?? []) {
       const actorKey = userId.has(f.actor) ? f.actor : null;
       const actorUser = actorKey ? USERS.find((u) => u.key === actorKey) : undefined;
       const senderFacilityIsReceiving = actorUser?.facility === s.receiving;
-      run(
+      await run(
         `INSERT INTO referral_messages (
            id, referral_id, kind, subject, body, sender_user_id, sender_name,
            sender_facility, recipient_facility, recipient_role, created_at, read_at
@@ -1625,17 +1625,17 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
   // Every non-draft referral is persisted in the standardised representation
   // that the FHIR facade serves, so what a receiving system reads is exactly
   // what HealthLink validated.
-  const seededReferrals = all<{ id: string }>("SELECT id FROM referrals WHERE status <> 'draft'");
+  const seededReferrals = await all<{ id: string }>("SELECT id FROM referrals WHERE status <> 'draft'");
   let storedResources = 0;
   for (const r of seededReferrals) {
-    const detail = getReferralDetail(r.id);
+    const detail = await getReferralDetail(r.id);
     if (!detail) continue;
     try {
-      const res = persistReferralBundle(r.id, mappingInputFor(detail), {
+      const res = await persistReferralBundle(r.id, await mappingInputFor(detail), {
         sourceFacilityId: detail.referring_facility_id,
       });
       storedResources += res.stored;
-      run("UPDATE referrals SET fhir_bundle_version = ? WHERE id = ?", res.version, r.id);
+      await run("UPDATE referrals SET fhir_bundle_version = ? WHERE id = ?", res.version, r.id);
     } catch (e) {
       console.error(`Failed to persist bundle for ${r.id}:`, e);
     }
@@ -1655,8 +1655,8 @@ export function seed(opts: { reset?: boolean } = {}): SeedSummary {
   return summarise();
 }
 
-function setSettingInternal(key: string, value: string, by: string) {
-  run(
+async function setSettingInternal(key: string, value: string, by: string) {
+  await run(
     `INSERT INTO system_settings (key, value, updated_at, updated_by) VALUES (?,?,?,?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
     key,
@@ -1814,7 +1814,7 @@ function buildAttachments(
  * Duplicating the hash construction here is what previously allowed the seeded
  * chain to diverge from the verifier.
  */
-function seedAuditTrail(
+async function seedAuditTrail(
   userId: Map<string, string>,
   facilityId: Map<string, string>,
   patientId: Map<string, string>,
@@ -1890,7 +1890,7 @@ function seedAuditTrail(
     const actorId = e.actor ? (userId.get(e.actor) ?? null) : null;
     const actor = e.actor ? USERS.find((u) => u.key === e.actor) : undefined;
 
-    writeAudit({
+    await writeAudit({
       action: e.action,
       eventType: e.eventType,
       eventSubtype: e.eventSubtype,
@@ -1912,27 +1912,27 @@ function seedAuditTrail(
   }
 }
 
-function summarise(): SeedSummary {
-  const count = (table: string) => get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`)?.n ?? 0;
+async function summarise(): Promise<SeedSummary> {
+  const count = async (table: string) => (await get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`))?.n ?? 0;
   return {
-    facilities: count("facilities"),
-    users: count("users"),
-    patients: count("patients"),
-    consents: count("consents"),
-    referrals: count("referrals"),
-    events: count("referral_events"),
-    messages: count("referral_messages"),
-    observations: count("referral_observations"),
-    auditEvents: count("audit_events"),
+    facilities: await count("facilities"),
+    users: await count("users"),
+    patients: await count("patients"),
+    consents: await count("consents"),
+    referrals: await count("referrals"),
+    events: await count("referral_events"),
+    messages: await count("referral_messages"),
+    observations: await count("referral_observations"),
+    auditEvents: await count("audit_events"),
   };
 }
 
-export function resetAndSeed(): SeedSummary {
-  return seed({ reset: true });
+export async function resetAndSeed(): Promise<SeedSummary> {
+  return await seed({ reset: true });
 }
 
-export function isSeeded(): boolean {
-  const row = get<{ n: number }>("SELECT COUNT(*) AS n FROM facilities");
+export async function isSeeded(): Promise<boolean> {
+  const row = await get<{ n: number }>("SELECT COUNT(*) AS n FROM facilities");
   return (row?.n ?? 0) > 0;
 }
 

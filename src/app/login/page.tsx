@@ -17,8 +17,8 @@ export const dynamic = "force-dynamic";
 export default async function LoginPage() {
   // Make a fresh checkout usable without a manual seeding step.
   try {
-    migrate();
-    if (!isSeeded()) seed();
+    await migrate();
+    if (!await isSeeded()) await seed();
   } catch (e) {
     console.error("Bootstrap failed:", e);
   }
@@ -26,7 +26,7 @@ export default async function LoginPage() {
   const session = await getSession();
   if (session) redirect("/dashboard");
 
-  const rows = all<{
+  const rows = await all<{
     email: string;
     full_name: string;
     role: string;

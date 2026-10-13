@@ -8,6 +8,7 @@ import {
 } from "@/lib/auth";
 import { dashboardStats, referralCounts } from "@/lib/referrals";
 import { all } from "@/lib/db";
+import { hoursBetween } from "@/lib/dialect";
 import { STATES, type ReferralState } from "@/lib/workflow";
 import { Card, PageHeader, StatusPill, Bar, MetricCell, MetricRow } from "@/components/ui";
 import { PHCORE_IG } from "@/lib/fhir/terminology";
@@ -27,14 +28,14 @@ export const dynamic = "force-dynamic";
 export default async function ReportsPage() {
   const session = await requirePageAccess(PERMISSIONS.REPORT_VIEW);
 
-  const stats = dashboardStats(session);
-  const counts = referralCounts(session);
+  const stats = await dashboardStats(session);
+  const counts = await referralCounts(session);
 
   const crossFacility = session.role === "hie_admin" || session.role === "privacy_auditor";
   const facilityFilter = crossFacility ? "1 = 1" : "(r.referring_facility_id = ? OR r.receiving_facility_id = ?)";
   const facilityParams = crossFacility || !session.facilityId ? [] : [session.facilityId, session.facilityId];
 
-  const completeness = all<{
+  const completeness = (await all<{
     total: number;
     with_hpi: number;
     with_pe: number;
@@ -57,34 +58,36 @@ export default async function ReportsPage() {
      LEFT JOIN consents c ON c.id = r.consent_id
      WHERE ${facilityFilter} AND r.deleted_at IS NULL AND r.status <> 'draft'`,
     ...facilityParams,
-  )[0];
+  ))[0];
 
-  const byPriority = all<{ priority: string; n: number }>(
+  const byPriority = await all<{ priority: string; n: number }>(
     `SELECT r.priority, COUNT(*) AS n FROM referrals r
       WHERE ${facilityFilter} AND r.deleted_at IS NULL AND r.status <> 'draft'
       GROUP BY r.priority ORDER BY n DESC`,
     ...facilityParams,
   );
 
-  const infoRequests = all<{ n: number }>(
+  const infoRequests = (await all<{ n: number }>(
     `SELECT COUNT(DISTINCT r.id) AS n FROM referrals r
        JOIN referral_events e ON e.referral_id = r.id
       WHERE ${facilityFilter} AND e.to_status = 'info-requested'`,
     ...facilityParams,
-  )[0]?.n ?? 0;
+  ))[0]?.n ?? 0;
 
   const nonDraft =
-    all<{ n: number }>(
+    (await all<{ n: number }>(
       `SELECT COUNT(*) AS n FROM referrals r WHERE ${facilityFilter} AND r.deleted_at IS NULL AND r.status <> 'draft'`,
       ...facilityParams,
-    )[0]?.n ?? 0;
+    ))[0]?.n ?? 0;
 
-  const turnaround = all<{ hours: number }>(
-    `SELECT (julianday(r.closed_at) - julianday(r.routed_at)) * 24.0 AS hours
+  const turnaroundRows = await all<{ hours: number }>(
+    `SELECT ${hoursBetween("r.routed_at", "r.closed_at")} AS hours
        FROM referrals r
       WHERE ${facilityFilter} AND r.closed_at IS NOT NULL AND r.routed_at IS NOT NULL`,
     ...facilityParams,
-  )
+  );
+
+  const turnaround = turnaroundRows
     .map((x) => x.hours)
     .filter((h) => Number.isFinite(h) && h >= 0)
     .sort((a, b) => a - b);
@@ -101,11 +104,11 @@ export default async function ReportsPage() {
     { label: "Active consent on file", n: completeness?.with_consent ?? 0 },
   ];
 
-  const validation = all<{ errors: number; warnings: number; n: number }>(
+  const validation = (await all<{ errors: number; warnings: number; n: number }>(
     `SELECT SUM(r.fhir_validation_errors) AS errors, SUM(r.fhir_validation_warnings) AS warnings, COUNT(*) AS n
        FROM referrals r WHERE ${facilityFilter} AND r.deleted_at IS NULL AND r.status <> 'draft'`,
     ...facilityParams,
-  )[0];
+  ))[0];
 
   const infoRate = pct(infoRequests, nonDraft);
 

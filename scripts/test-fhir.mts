@@ -3,20 +3,48 @@
  * Runs outside Next.js using tsx.
  *
  * Important: this suite writes referrals, transitions, audit events and tampered
- * records. It therefore runs against its OWN database file so that a test run can
- * never contaminate the demonstration dataset. `db.ts` honours HEALTHLINK_DB.
+ * records. On SQLite it therefore uses its OWN database file, so a test run can
+ * never contaminate the demonstration dataset (`db.ts` honours HEALTHLINK_DB).
  *
- * Usage: npm test
+ * Running against Postgres requires an explicit opt-in, because the only safe
+ * Postgres it can use is a throwaway database. Point DATABASE_URL at one and set
+ * HEALTHLINK_TEST_POSTGRES=1; the suite then deletes and re-seeds every table in
+ * it. Without that flag it always uses SQLite, so `npm test` can never wipe a
+ * live Neon database by accident.
+ *
+ * Usage:
+ *   npm test                      # SQLite, isolated test file
+ *   npm run test:postgres         # Postgres, requires an opt-in flag
  */
 
 // Must be set before any module imports db.ts.
-if (!process.env.HEALTHLINK_DB) {
+const POSTGRES_TARGET = /^postgres/.test(process.env.DATABASE_URL ?? "");
+if (POSTGRES_TARGET && process.env.HEALTHLINK_TEST_POSTGRES !== "1") {
+  console.error(
+    [
+      "",
+      "DATABASE_URL points at Postgres, but this suite DELETES and re-seeds every table.",
+      "Refusing to run against what may be a real database.",
+      "",
+      "To run the suite against Postgres on purpose, set HEALTHLINK_TEST_POSTGRES=1,",
+      "and make sure DATABASE_URL names a throwaway database:",
+      "",
+      "  $env:HEALTHLINK_TEST_POSTGRES=1; npm run test:postgres",
+      "",
+    ].join("\n"),
+  );
+  process.exit(1);
+}
+
+const USING_POSTGRES = POSTGRES_TARGET && process.env.HEALTHLINK_TEST_POSTGRES === "1";
+
+if (!USING_POSTGRES && !process.env.HEALTHLINK_DB) {
   process.env.HEALTHLINK_DB = join(process.cwd(), "data", "healthlink-test.db");
 }
 
 import { unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { migrate, closeDb, all, run } from "../src/lib/db";
+import { migrate, closeDb, all, run, dialect } from "../src/lib/db";
 import { seed } from "../src/lib/seed";
 import { PH_CORE_PROFILES } from "../src/lib/fhir/profiles";
 import { validateBundle, validateResource, phCoreAlignment } from "../src/lib/fhir/validator";
@@ -38,17 +66,20 @@ function check(name: string, condition: boolean, detail = "") {
   }
 }
 
-// Start from a clean test database every run.
-for (const suffix of ["", "-wal", "-shm"]) {
-  const f = `${TEST_DB}${suffix}`;
-  if (existsSync(f)) unlinkSync(f);
+// On SQLite, start from a clean test database every run. On Postgres, the seed
+// below resets the tables instead, so nothing needs deleting here.
+if (!USING_POSTGRES) {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const f = `${TEST_DB}${suffix}`;
+    if (existsSync(f)) unlinkSync(f);
+  }
 }
 
-migrate();
-seed({ reset: true });
+await migrate();
+await seed({ reset: true });
 
 console.log("HealthLink FHIR layer smoke test");
-console.log(`database: ${TEST_DB}\n`);
+console.log(`database: ${USING_POSTGRES ? `postgres (${dialect()})` : TEST_DB}\n`);
 
 /* --- 1. PH Core profile registry --- */
 check("PH Core profile registry is populated", PH_CORE_PROFILES.length >= 10, `got ${PH_CORE_PROFILES.length}`);
@@ -175,7 +206,7 @@ check("Provenance with onBehalfOf passes", validateResource(goodProvenance).vali
 const { all } = await import("../src/lib/db");
 const { getReferralDetail, bundleForReferral } = await import("../src/lib/referrals");
 
-const refs = all("SELECT id, referral_number, status FROM referrals ORDER BY created_at");
+const refs = await all("SELECT id, referral_number, status FROM referrals ORDER BY created_at");
 check("Seeded referrals exist", refs.length >= 5, `got ${refs.length}`);
 
 let allBundlesValid = true;
@@ -184,8 +215,8 @@ let totalEntries = 0;
 const errorDetail = [];
 
 for (const r of refs) {
-  const detail = getReferralDetail(r.id);
-  const bundle = bundleForReferral(detail);
+  const detail = await getReferralDetail(r.id);
+  const bundle = await bundleForReferral(detail);
   const result = validateBundle(bundle);
   totalEntries += bundle.entry.length;
   totalErrors += result.errorCount;
@@ -206,8 +237,8 @@ check(
 check("Bundles contain the expected number of resources", totalEntries > refs.length * 5, `entries=${totalEntries}`);
 
 /* --- 8. Bundle catches a dangling internal reference --- */
-const detail0 = getReferralDetail(refs[0].id);
-const b0 = bundleForReferral(detail0);
+const detail0 = await getReferralDetail(refs[0].id);
+const b0 = await bundleForReferral(detail0);
 const dangling = JSON.parse(JSON.stringify(b0));
 dangling.entry.push({
   fullUrl: "http://localhost:3000/fhir/ServiceRequest/sr-dangling",
@@ -375,13 +406,13 @@ check("Task carries the workflow history as notes", (t.note?.length ?? 0) === 1)
 check("Task validates against PH Core", validateResource(t).valid);
 
 /* --- 14. Alerting on seeded data shape --- */
-const stats = all("SELECT status, COUNT(*) AS n FROM referrals GROUP BY status");
+const stats = await all("SELECT status, COUNT(*) AS n FROM referrals GROUP BY status");
 check("Seeded data spans multiple workflow states", stats.length >= 5, `states=${stats.length}`);
 
 /* --- 14. Audit trail integrity --- */
 const { verifyAuditChain, writeAudit, sha256: hashFn } = await import("../src/lib/db");
 
-const chainBefore = verifyAuditChain();
+const chainBefore = await verifyAuditChain();
 check(
   `Seeded audit chain verifies (${chainBefore.checked} records)`,
   chainBefore.intact,
@@ -390,13 +421,13 @@ check(
 check("Audit chain reports a non-zero record count", chainBefore.checked > 20, `checked=${chainBefore.checked}`);
 
 // A live write must extend the chain rather than break it.
-writeAudit({
+await writeAudit({
   action: "R",
   eventType: "read",
   description: "Smoke-test read event appended by the test suite.",
   outcome: "0",
 });
-const chainAfter = verifyAuditChain();
+const chainAfter = await verifyAuditChain();
 check(
   "Chain still verifies after appending a live event",
   chainAfter.intact && chainAfter.checked === chainBefore.checked + 1,
@@ -404,23 +435,25 @@ check(
 );
 
 // Tampering must be detectable.
-const victim = all<{ id: string; description: string }>(
-  "SELECT id, description FROM audit_events ORDER BY occurred_at ASC LIMIT 1",
+const victim = (
+  await all<{ id: string; description: string }>(
+    "SELECT id, description FROM audit_events ORDER BY seq ASC LIMIT 1",
+  )
 )[0];
 const original = victim.description;
-run("UPDATE audit_events SET description = ? WHERE id = ?", "TAMPERED", victim.id);
-const chainTampered = verifyAuditChain();
+await run("UPDATE audit_events SET description = ? WHERE id = ?", "TAMPERED", victim.id);
+const chainTampered = await verifyAuditChain();
 check(
   "Tampering with a record breaks the chain",
   !chainTampered.intact && chainTampered.brokenAt === victim.id,
   `intact=${chainTampered.intact} brokenAt=${chainTampered.brokenAt}`,
 );
-run("UPDATE audit_events SET description = ? WHERE id = ?", original, victim.id);
-check("Restoring the record restores the chain", verifyAuditChain().intact);
+await run("UPDATE audit_events SET description = ? WHERE id = ?", original, victim.id);
+check("Restoring the record restores the chain", (await verifyAuditChain()).intact);
 
 /* --- 15. FHIR resource store --- */
 const { storeSummary } = await import("../src/lib/fhir-store");
-const storeRows = storeSummary();
+const storeRows = await storeSummary();
 check("FHIR store holds resources after seeding", storeRows.length >= 10, `types=${storeRows.length}`);
 check(
   "FHIR store holds Patient and Organization resources",
@@ -436,17 +469,17 @@ const {
 } = await import("../src/lib/referrals");
 const { ROLE_PERMISSIONS } = await import("../src/lib/auth");
 
-const referringUser = all<{ id: string; full_name: string; role: string; facility_id: string | null; email: string }>(
+const referringUser = (await all<{ id: string; full_name: string; role: string; facility_id: string | null; email: string }>(
   "SELECT id, full_name, role, facility_id, email FROM users WHERE role = 'physician' AND facility_id IS NOT NULL LIMIT 1",
-)[0];
+))[0];
 
 const referralFacility = referringUser.facility_id!;
-const receivingFacility = all<{ id: string }>(
+const receivingFacility = (await all<{ id: string }>(
   "SELECT id FROM facilities WHERE id <> ? AND is_receiving = 1 LIMIT 1",
   referralFacility,
-)[0];
+))[0];
 
-const testPatient = all<{ id: string }>("SELECT id FROM patients LIMIT 1")[0];
+const testPatient = (await all<{ id: string }>("SELECT id FROM patients LIMIT 1"))[0];
 const physicianPermissions = ROLE_PERMISSIONS.physician;
 
 const session = {
@@ -467,7 +500,7 @@ check("Test fixtures resolved for live creation", !!referralFacility && !!receiv
 
 let created: { id: string; referralNumber: string; trackingCode: string } | null = null;
 try {
-  created = createReferral(session, {
+  created = await createReferral(session, {
     patientId: testPatient.id,
     receivingFacilityId: receivingFacility.id,
     priority: "urgent",
@@ -495,7 +528,7 @@ try {
 }
 
 if (created) {
-  const detail = getDetail2(created.id);
+  const detail = await getDetail2(created.id);
   check("Created referral is retrievable", !!detail);
   check("Created referral starts as a draft", detail?.status === "draft", `status=${detail?.status}`);
   check(
@@ -506,32 +539,32 @@ if (created) {
   check("Created referral carries a patient-visible tracking code", created.trackingCode.length >= 8);
   check("Identifiers are unique per referral", created.referralNumber !== created.trackingCode);
 
-  const readiness = readinessFor2(getDetail2(created.id)!);
+  const readiness = await readinessFor2((await getDetail2(created.id))!);
   check(
     "A complete referral passes the routing checklist",
     readiness.ready,
     readiness.blocking.map((b) => b.label).join("; "),
   );
 
-  const routed = transitionReferral(session, {
+  const routed = await transitionReferral(session, {
     referralId: created.id,
     action: "submit",
     note: "Smoke test routing.",
   });
   check("Routing a complete referral succeeds", routed.ok, routed.message);
 
-  const afterRoute = getDetail2(created.id);
+  const afterRoute = await getDetail2(created.id);
   check("Routing moved the referral to submitted", afterRoute?.status === "submitted", `status=${afterRoute?.status}`);
   check("Routing recorded a workflow event", (afterRoute?.events.length ?? 0) >= 2);
   check("Routing set the FHIR service request id", !!afterRoute?.fhir_service_request_id);
   check("Routing bumped the FHIR bundle version", (afterRoute?.fhir_bundle_version ?? 0) >= 1);
 
   // A user from a facility that is not a party must be refused.
-  const outsider = all<{ id: string; full_name: string; role: string; facility_id: string | null; email: string }>(
+  const outsider = (await all<{ id: string; full_name: string; role: string; facility_id: string | null; email: string }>(
     "SELECT id, full_name, role, facility_id, email FROM users WHERE facility_id IS NOT NULL AND facility_id <> ? AND facility_id <> ? LIMIT 1",
     referralFacility,
     receivingFacility.id,
-  )[0];
+  ))[0];
 
   if (outsider) {
     const outsiderSession = {
@@ -541,12 +574,12 @@ if (created) {
       fullName: outsider.full_name,
       facilityId: outsider.facility_id,
     };
-    const denied = transitionReferral(outsiderSession, { referralId: created.id, action: "receive" });
+    const denied = await transitionReferral(outsiderSession, { referralId: created.id, action: "receive" });
     check("An uninvolved facility cannot transition the referral", !denied.ok, `got ok=${denied.ok}`);
   }
 
   // The bundle for the newly created referral must validate.
-  const newBundle = bundleForReferral(getDetail2(created.id)!);
+  const newBundle = await bundleForReferral((await getDetail2(created.id))!);
   const newBundleResult = validateBundle(newBundle);
   check(
     "A referral created at runtime validates with zero errors",
@@ -598,15 +631,28 @@ check("Vitals are categorised as vital signs", vitalsOnly.every((o) => o.categor
 
 /* --- 18. Test isolation --- */
 const { dbPath } = await import("../src/lib/db");
-check(
-  "The test suite runs against its own database file",
-  dbPath().endsWith("healthlink-test.db"),
-  `dbPath=${dbPath()}`,
-);
+if (USING_POSTGRES) {
+  // On Postgres, isolation comes from pointing at a dedicated test database
+  // (created by scripts/test-postgres.mts) rather than from a file path. There is
+  // no path to assert, so the equivalent guarantee is that the suite is NOT
+  // running against the demo database.
+  const testDbName = new URL(process.env.DATABASE_URL ?? "").pathname.replace(/^\//, "");
+  check(
+    "The test suite runs against a dedicated test database, not the demo one",
+    testDbName === "healthlink_test",
+    `DATABASE_URL names "${testDbName}"`,
+  );
+} else {
+  check(
+    "The test suite runs against its own database file",
+    dbPath().endsWith("healthlink-test.db"),
+    `dbPath=${dbPath()}`,
+  );
+}
 check(
   "This run's database holds the 6 seeded scenarios plus the runtime-created referral",
-  all<{ n: number }>("SELECT COUNT(*) AS n FROM referrals")[0]?.n === 7,
-  `got ${all<{ n: number }>("SELECT COUNT(*) AS n FROM referrals")[0]?.n}`,
+  (await all<{ n: number }>("SELECT COUNT(*) AS n FROM referrals"))[0]?.n === 7,
+  `got ${(await all<{ n: number }>("SELECT COUNT(*) AS n FROM referrals"))[0]?.n}`,
 );
 
 // A referral with no vitals must not fabricate observations.
@@ -639,8 +685,8 @@ check(
 
 // The referral created at runtime carried vitals; its bundle must contain them.
 if (created) {
-  const withVitals = getDetail2(created.id)!;
-  const vb = bundleForReferral(withVitals);
+  const withVitals = (await getDetail2(created.id))!;
+  const vb = await bundleForReferral(withVitals);
   const obsCodes = (vb.entry ?? [])
     .filter((e) => e.resource?.resourceType === "Observation")
     .map((e) => (e.resource as unknown as { code: { coding: Array<{ code: string }> } }).code.coding[0].code);
@@ -670,7 +716,7 @@ check(
   `got ${facilityShortCode("Buhangin District Health Center", "Buhangin DHC")}`,
 );
 
-const numbered = all<{ referral_number: string; facility_name: string; short_name: string | null }>(
+const numbered = await all<{ referral_number: string; facility_name: string; short_name: string | null }>(
   `SELECT r.referral_number, f.name AS facility_name, f.short_name
      FROM referrals r JOIN facilities f ON f.id = r.referring_facility_id`,
 );
@@ -693,8 +739,10 @@ check(
     .join("; "),
 );
 
-const dupNumbers = all<{ referral_number: string; n: number }>(
-  "SELECT referral_number, COUNT(*) AS n FROM referrals GROUP BY referral_number HAVING n > 1",
+const dupNumbers = await all<{ referral_number: string; n: number }>(
+  // Postgres does not allow a SELECT alias in HAVING (SQLite does), so the
+  // aggregate is repeated rather than referenced by name.
+  "SELECT referral_number, COUNT(*) AS n FROM referrals GROUP BY referral_number HAVING COUNT(*) > 1",
 );
 check("No duplicate referral numbers exist", dupNumbers.length === 0, JSON.stringify(dupNumbers));
 
@@ -741,7 +789,7 @@ check(
   "audit is read-only",
 );
 
-const revocable = all<{
+const revocable = (await all<{
   id: string;
   referral_number: string;
   status: string;
@@ -755,15 +803,15 @@ const revocable = all<{
      AND r.confidentiality_level = 'normal'
      AND r.status NOT IN ('closed-feedback','cancelled','draft')
    LIMIT 1
-`)[0];
+`))[0];
 
 check("A referral with active consent exists to test revocation", !!revocable);
 
 if (revocable) {
-  const nurseUser = all<{ id: string; full_name: string; role: string; facility_id: string; email: string }>(
+  const nurseUser = (await all<{ id: string; full_name: string; role: string; facility_id: string; email: string }>(
     "SELECT id, full_name, role, facility_id, email FROM users WHERE role = 'nurse' AND facility_id = ? LIMIT 1",
     revocable.referring_facility_id,
-  )[0];
+  ))[0];
 
   const nurseSession = {
     sessionId: "ses-revoke",
@@ -779,17 +827,17 @@ if (revocable) {
     expiresAt: new Date(Date.now() + 3600_000).toISOString(),
   };
 
-  const detail = getDetail2(revocable.id)!;
+  const detail = (await getDetail2(revocable.id))!;
   check(
     "The referral is at normal confidentiality before revocation",
     detail.confidentiality_level === "normal",
     detail.confidentiality_level,
   );
 
-  const revoked = revokeConsent(nurseSession, revocable.consent_id, "Test: patient withdrew authorisation.");
+  const revoked = await revokeConsent(nurseSession, revocable.consent_id, "Test: patient withdrew authorisation.");
   check("Revoking consent succeeds", revoked.ok, revoked.message);
 
-  const after = getDetail2(revocable.id)!;
+  const after = (await getDetail2(revocable.id))!;
   check("Consent is marked revoked", after.consent?.status === "revoked", after.consent?.status ?? "");
   check("The revocation reason is stored", !!after.consent?.revoke_reason, after.consent?.revoke_reason ?? "");
   check("The revocation timestamp is stored", !!after.consent?.revoked_at, after.consent?.revoked_at ?? "");
@@ -816,7 +864,7 @@ if (revocable) {
       otherwiseAllowed.reason ?? "so a refusal must come from the consent gate, not from permissions",
     );
 
-    const refused = trans(nurseSession, {
+    const refused = await trans(nurseSession, {
       referralId: revocable.id,
       action: stillAvailable.action,
       note: "Test: expect refusal by the consent gate.",
@@ -828,19 +876,19 @@ if (revocable) {
       refused.message.slice(0, 110),
     );
 
-    const gateAudit = all<{ n: number }>(
+    const gateAudit = (await all<{ n: number }>(
       `SELECT COUNT(*) AS n FROM audit_events
         WHERE referral_id = ? AND event_type = 'consent' AND event_subtype = 'gate-blocked' AND outcome <> '0'`,
       revocable.id,
-    )[0];
+    ))[0];
     check("The refused transition is audited", (gateAudit?.n ?? 0) > 0, `matching events: ${gateAudit?.n}`);
   }
 
-  const revokeAudit = all<{ n: number }>(
+  const revokeAudit = (await all<{ n: number }>(
     `SELECT COUNT(*) AS n FROM audit_events
       WHERE referral_id = ? AND event_type = 'consent' AND event_subtype = 'revoked'`,
     revocable.id,
-  )[0];
+  ))[0];
   check("The revocation is audited", (revokeAudit?.n ?? 0) > 0, `matching events: ${revokeAudit?.n}`);
 }
 
@@ -857,7 +905,7 @@ const DOCUMENTED_CODES: Record<string, string> = {
   "HL-2026-TAL-00001": "PJ5F4-G2X8J",
 };
 
-const seededCodes = all<{ referral_number: string; tracking_code: string }>(
+const seededCodes = await all<{ referral_number: string; tracking_code: string }>(
   "SELECT referral_number, tracking_code FROM referrals",
 );
 check(
@@ -885,7 +933,7 @@ check(
 const { trackReferral } = await import("../src/lib/referrals");
 let lookupsResolved = 0;
 for (const [number, code] of Object.entries(DOCUMENTED_CODES)) {
-  if (trackReferral(number, code)) lookupsResolved++;
+  if (await trackReferral(number, code)) lookupsResolved++;
 }
 check(
   "Every documented referral number and code pair resolves in the public lookup",
@@ -896,7 +944,7 @@ check(
 // A wrong code must not resolve.
 check(
   "A mismatched tracking code is refused",
-  !trackReferral("HL-2026-BUH-00001", "WRONG-CODE1"),
+  !await trackReferral("HL-2026-BUH-00001", "WRONG-CODE1"),
 );
 
 console.log(`\n${pass} passed, ${fail} failed`);
@@ -905,5 +953,5 @@ if (failures.length) {
   for (const f of failures) console.log(`  x ${f}`);
 }
 
-closeDb();
+await closeDb();
 process.exit(fail ? 1 : 0);

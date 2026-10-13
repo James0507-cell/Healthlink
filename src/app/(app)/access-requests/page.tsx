@@ -27,7 +27,7 @@ export default async function AccessRequestsPage() {
   // The narrower of the two permissions is sufficient to view this page.
   if (!hasPermission(session, PERMISSIONS.ACCESS_REQUEST_DECIDE) && !hasPermission(session, PERMISSIONS.ACCESS_REQUEST_CREATE)) redirect("/dashboard");
 
-  const requests = all<{
+  const requests = await all<{
     id: string;
     referral_id: string | null;
     referral_number: string | null;

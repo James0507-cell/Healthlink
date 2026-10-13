@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   }
   if (!hasPermission(session, PERMISSIONS.AUDIT_EXPORT)) {
-    writeAudit({
+    await writeAudit({
       action: "E",
       eventType: "security",
       eventSubtype: "audit-export-denied",
@@ -75,7 +75,7 @@ export async function GET(request: NextRequest) {
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-  const rows = all<{
+  const rows = await all<{
     occurred_at: string;
     action: string;
     event_type: string;
@@ -102,12 +102,12 @@ export async function GET(request: NextRequest) {
        FROM audit_events a
        LEFT JOIN referrals r ON r.id = a.referral_id
      ${whereSql}
-     ORDER BY a.occurred_at ASC, a.rowid ASC`,
+     ORDER BY a.occurred_at ASC, a.seq ASC`,
     ...params,
   );
 
   const facilityNames = new Map(
-    all<{ id: string; name: string }>("SELECT id, name FROM facilities").map((f) => [f.id, f.name]),
+    (await all<{ id: string; name: string }>("SELECT id, name FROM facilities")).map((f) => [f.id, f.name]),
   );
 
   const header = [
@@ -172,7 +172,7 @@ export async function GET(request: NextRequest) {
 
   const body = provenance + lines.join("\r\n") + "\r\n";
 
-  writeAudit({
+  await writeAudit({
     action: "R",
     eventType: "export",
     eventSubtype: "audit-csv",

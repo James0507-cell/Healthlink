@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
         : "1 = 0";
     const scopeParams: unknown[] = crossFacility || !session.facilityId ? [] : [session.facilityId, session.facilityId];
 
-    const rows = all<{
+    const rows = await all<{
       id: string;
       referral_number: string;
       status: string;
@@ -85,7 +85,7 @@ export async function GET(request: NextRequest) {
 
   /* --- Patients --- */
   if (canPatients) {
-    const rows = all<{
+    const rows = await all<{
       id: string;
       given_name: string;
       family_name: string;

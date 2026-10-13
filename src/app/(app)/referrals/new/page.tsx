@@ -14,7 +14,7 @@ export default async function NewReferralPage() {
   if (!session) redirect("/login");
   if (!hasPermission(session, PERMISSIONS.REFERRAL_CREATE)) redirect("/dashboard");
 
-  const patients = listPatients({ limit: 200 }).map((p) => ({
+  const patients = (await listPatients({ limit: 200 })).map((p) => ({
     id: p.id,
     fullName: `${p.given_name} ${p.family_name}`,
     mrn: p.local_mrn ?? null,
@@ -25,7 +25,7 @@ export default async function NewReferralPage() {
     phone: p.phone ?? null,
   }));
 
-  const facilities = listFacilities({ receiving: true })
+  const facilities = (await listFacilities({ receiving: true }))
     .filter((f) => f.id !== session.facilityId)
     .map((f) => ({
       id: f.id,

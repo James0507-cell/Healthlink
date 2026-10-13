@@ -35,7 +35,7 @@ export async function transitionAction(_prev: TransitionState, formData: FormDat
   const appointmentAt = appointmentAtRaw ? new Date(appointmentAtRaw).toISOString() : undefined;
 
   const meta = await requestMeta();
-  const result = transitionReferral(
+  const result = await transitionReferral(
     session,
     {
       referralId,
@@ -116,7 +116,7 @@ export async function createReferralAction(
 
   let created: { id: string; referralNumber: string; trackingCode: string };
   try {
-    const result = createReferral(session, payload, meta);
+    const result = await createReferral(session, payload, meta);
     created = { id: result.id, referralNumber: result.referralNumber, trackingCode: result.trackingCode };
   } catch (e) {
     const message = (e as Error).message;
@@ -131,11 +131,11 @@ export async function createReferralAction(
   revalidatePath("/dashboard");
 
   if (payload.routeImmediately) {
-    const detail = getReferralDetail(created.id);
+    const detail = await getReferralDetail(created.id);
     if (detail) {
-      const readiness = readinessFor(detail);
+      const readiness = await readinessFor(detail);
       if (!readiness.ready) {
-        writeAudit({
+        await writeAudit({
           action: "E",
           eventType: "route",
           eventSubtype: "deferred",
@@ -151,7 +151,7 @@ export async function createReferralAction(
         // Land on the detail page where the outstanding requirements are listed.
         redirect(`/referrals/${created.id}?saved=draft`);
       }
-      const routed = transitionReferral(session, { referralId: created.id, action: "submit" }, meta);
+      const routed = await transitionReferral(session, { referralId: created.id, action: "submit" }, meta);
       if (!routed.ok) {
         return {
           error: `Referral ${created.referralNumber} was saved as a draft, but routing failed: ${routed.message}`,
@@ -216,7 +216,7 @@ export async function addAttachmentAction(
     }[docTypeCode] ?? "Document";
 
   const meta = await requestMeta();
-  const result = addAttachment(
+  const result = await addAttachment(
     session,
     referralId,
     { title, docTypeCode, docTypeDisplay, contentText, contentType: "text/plain" },
@@ -255,7 +255,7 @@ export async function revokeConsentAction(_prev: ConsentState, formData: FormDat
   if (!reason) return { error: "Record the reason for revoking consent." };
 
   const meta = await requestMeta();
-  const result = revokeConsent(session, consentId, reason, meta);
+  const result = await revokeConsent(session, consentId, reason, meta);
   if (!result.ok) return { error: result.message };
 
   if (referralId) revalidatePath(`/referrals/${referralId}`);
@@ -290,13 +290,13 @@ export async function validateReferralAction(_prev: ValidateState, formData: For
   const referralId = String(formData.get("referralId") ?? "");
   if (!referralId) return { error: "Missing referral." };
 
-  const detail = getReferralDetail(referralId);
+  const detail = await getReferralDetail(referralId);
   if (!detail) return { error: "Referral not found." };
 
-  const readiness = readinessFor(detail);
+  const readiness = await readinessFor(detail);
   const meta = await requestMeta();
 
-  writeAudit({
+  await writeAudit({
     action: "E",
     eventType: "validate",
     actorUserId: session.id,
@@ -338,7 +338,7 @@ export async function canView(referralId: string): Promise<boolean> {
   const session = await getSession();
   if (!session) return false;
   if (!hasPermission(session, PERMISSIONS.REFERRAL_READ_OWN_FACILITY)) return false;
-  const detail = getReferralDetail(referralId);
+  const detail = await getReferralDetail(referralId);
   if (!detail) return false;
   if (session.role === "hie_admin" || session.role === "privacy_auditor") return true;
   return session.facilityId === detail.referringFacility.id || session.facilityId === detail.receivingFacility.id;

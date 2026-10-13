@@ -27,12 +27,13 @@ export default async function TrackPage({
   const referralNumber = (sp.ref ?? "").trim();
   const code = (sp.code ?? "").trim();
 
-  let result: ReturnType<typeof trackReferral> = null;
+  // trackReferral is async, so the resolved type needs Awaited<>.
+  let result: Awaited<ReturnType<typeof trackReferral>> = null;
   let searched = false;
 
   if (referralNumber && code) {
     searched = true;
-    result = trackReferral(referralNumber, code);
+    result = await trackReferral(referralNumber, code);
   }
 
   const unauthenticated = !session;

@@ -57,7 +57,7 @@ export async function validateJsonAction(
   const result = validateResource(resource, { phCore: true });
   const meta = await requestMeta();
 
-  writeAudit({
+  await writeAudit({
     action: "E",
     eventType: "validate",
     eventSubtype: `${resource.resourceType} (interactive)`,

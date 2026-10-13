@@ -16,10 +16,10 @@ export interface LoginState {
 }
 
 /** Ensure the schema and demo data exist before the first sign-in attempt. */
-function ensureReady() {
+async function ensureReady() {
   try {
-    migrate();
-    if (!isSeeded()) seed();
+    await migrate();
+    if (!await isSeeded()) await seed();
   } catch (e) {
     console.error("HealthLink bootstrap failed:", e);
   }
@@ -88,8 +88,8 @@ export async function logoutAction() {
 /** Bootstrap the demo database from the UI (used on a fresh checkout). */
 export async function seedDemoDataAction(): Promise<{ ok: boolean; message: string }> {
   try {
-    migrate();
-    const summary = seed({ reset: true });
+    await migrate();
+    const summary = await seed({ reset: true });
     return {
       ok: true,
       message: `Demo data loaded: ${summary.facilities} facilities, ${summary.users} users, ${summary.patients} patients, ${summary.referrals} referrals.`,
@@ -115,9 +115,9 @@ export async function revokeAllSessionsAction(userId: string) {
   if (session.role !== "hie_admin" && session.id !== userId) {
     throw new Error("FORBIDDEN: you may only end your own sessions.");
   }
-  const target = get<{ email: string }>("SELECT email FROM users WHERE id = ?", userId);
-  run("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", new Date().toISOString(), userId);
-  writeAudit({
+  const target = await get<{ email: string }>("SELECT email FROM users WHERE id = ?", userId);
+  await run("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", new Date().toISOString(), userId);
+  await writeAudit({
     action: "E",
     eventType: "security",
     eventSubtype: "sessions-revoked",

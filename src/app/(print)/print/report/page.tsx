@@ -13,14 +13,14 @@ export default async function PrintReportPage() {
   const session = (await getSession())!;
   if (!hasPermission(session, PERMISSIONS.REPORT_VIEW)) redirect("/dashboard");
 
-  const stats = dashboardStats(session);
-  const counts = referralCounts(session);
+  const stats = await dashboardStats(session);
+  const counts = await referralCounts(session);
 
   const crossFacility = session.role === "hie_admin" || session.role === "privacy_auditor";
   const facilityFilter = crossFacility ? "1 = 1" : "(r.referring_facility_id = ? OR r.receiving_facility_id = ?)";
   const facilityParams = crossFacility || !session.facilityId ? [] : [session.facilityId, session.facilityId];
 
-  const completeness = all<{
+  const completeness = (await all<{
     total: number;
     with_hpi: number;
     with_pe: number;
@@ -40,20 +40,20 @@ export default async function PrintReportPage() {
      FROM referrals r
      WHERE ${facilityFilter} AND r.deleted_at IS NULL AND r.status <> 'draft'`,
     ...facilityParams,
-  )[0];
+  ))[0];
 
   const nonDraft =
-    all<{ n: number }>(
+    (await all<{ n: number }>(
       `SELECT COUNT(*) AS n FROM referrals r WHERE ${facilityFilter} AND r.deleted_at IS NULL AND r.status <> 'draft'`,
       ...facilityParams,
-    )[0]?.n ?? 0;
+    ))[0]?.n ?? 0;
 
-  const infoRequests = all<{ n: number }>(
+  const infoRequests = (await all<{ n: number }>(
     `SELECT COUNT(DISTINCT r.id) AS n FROM referrals r
        JOIN referral_events e ON e.referral_id = r.id
       WHERE ${facilityFilter} AND e.to_status = 'info-requested'`,
     ...facilityParams,
-  )[0]?.n ?? 0;
+  ))[0]?.n ?? 0;
 
   const pct = (n: number, d: number) => (d ? `${Math.round((n / d) * 100)}%` : "—");
 

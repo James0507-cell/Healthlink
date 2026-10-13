@@ -28,7 +28,7 @@ export default async function DirectoryPage() {
   // The narrower of the two permissions is sufficient to view this page.
   if (!hasPermission(session, PERMISSIONS.DIRECTORY_MANAGE) && !hasPermission(session, PERMISSIONS.USER_MANAGE)) redirect("/dashboard");
 
-  const facilities = all<{
+  const facilities = await all<{
     id: string;
     name: string;
     short_name: string | null;
@@ -44,7 +44,7 @@ export default async function DirectoryPage() {
     service_capabilities: string | null;
   }>("SELECT * FROM facilities ORDER BY name");
 
-  const users = all<{
+  const users = await all<{
     id: string;
     full_name: string;
     email: string;
@@ -69,7 +69,7 @@ export default async function DirectoryPage() {
     byFacility.set(key, list);
   }
 
-  const apiTokens = all<{
+  const apiTokens = await all<{
     id: string;
     label: string;
     token_prefix: string;

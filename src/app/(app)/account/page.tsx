@@ -28,7 +28,7 @@ export default async function AccountPage() {
   const session = await requirePageSession();
   if (!session) redirect("/login");
 
-  const user = get<{
+  const user = await get<{
     id: string;
     email: string;
     full_name: string;
@@ -43,7 +43,7 @@ export default async function AccountPage() {
   }>("SELECT * FROM users WHERE id = ?", session.id);
 
   const facility = session.facilityId
-    ? get<{
+    ? await get<{
         name: string;
         level: string | null;
         ownership: string | null;
@@ -54,11 +54,11 @@ export default async function AccountPage() {
       }>("SELECT * FROM facilities WHERE id = ?", session.facilityId)
     : undefined;
 
-  const sessions = activeSessions(session.id);
+  const sessions = await activeSessions(session.id);
   const permissions = ROLE_PERMISSIONS[session.role as Role] ?? [];
 
   // This user's own recent activity, which they are entitled to see.
-  const myActivity = all<{ occurred_at: string; event_type: string; description: string; outcome: string }>(
+  const myActivity = await all<{ occurred_at: string; event_type: string; description: string; outcome: string }>(
     "SELECT occurred_at, event_type, description, outcome FROM audit_events WHERE actor_user_id = ? ORDER BY occurred_at DESC LIMIT 10",
     session.id,
   );

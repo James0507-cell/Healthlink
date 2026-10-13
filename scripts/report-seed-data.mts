@@ -36,10 +36,24 @@ console.log(`  distinct allergy codes        : ${snomed.size}  ${[...snomed].joi
 
 console.log("\nBundled terminology subsets (available to pick from)\n");
 const terminology = readFileSync("src/lib/fhir/terminology.ts", "utf8");
-const cs = (name: string) => {
-  const m = terminology.match(new RegExp(`export const ${name}[\\s\\S]*?\\n\\};`));
-  return m ? (m[0].match(/^\s{2}"?[A-Z0-9][^":]*"?: \{ code:/gm) || []).length : 0;
+
+/**
+ * Count the entries of a terminology subset.
+ *
+ * The subsets do not all use the same value shape: ICD-10 and LOINC map to an
+ * object (`"code": { code: ... }`), while SNOMED maps to a plain string
+ * (`"code": "display"`). Counting only the object form silently reported zero
+ * SNOMED codes, which looked like a missing subset rather than a counting bug.
+ * Both forms are matched here.
+ */
+const cs = (name: string): number => {
+  const block = terminology.match(new RegExp(`export const ${name}[\\s\\S]*?\\n\\};`));
+  if (!block) return 0;
+  const objectForm = block[0].match(/^\s{2}"?[\w.-]+"?:\s*\{\s*code:/gm) ?? [];
+  const stringForm = block[0].match(/^\s{2}"?[\w.-]+"?:\s*"/gm) ?? [];
+  return objectForm.length + stringForm.length;
 };
+
 console.log(`  ICD-10 codes : ${cs("ICD10")}`);
 console.log(`  LOINC codes  : ${cs("LOINC")}`);
 console.log(`  SNOMED codes : ${cs("SNOMED")}`);

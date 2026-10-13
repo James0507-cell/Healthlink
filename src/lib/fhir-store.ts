@@ -8,6 +8,7 @@
  */
 
 import { run, get, all, newId } from "./db";
+import { jsonField } from "./dialect";
 import type { Bundle, Resource, Reference } from "./fhir/types";
 import { buildReferralBundle, type MappingInput } from "./fhir/mapper";
 import { validateBundle } from "./fhir/validator";
@@ -38,11 +39,11 @@ function referralIdOf(resource: Resource): string | null {
  * Write a referral's bundle into the FHIR store, replacing the previous version.
  * Returns validation statistics so the caller can persist them on the referral.
  */
-export function persistReferralBundle(
+export async function persistReferralBundle(
   referralId: string,
   input: MappingInput,
   opts: { sourceFacilityId?: string | null; createdByUser?: string | null } = {},
-): PersistResult {
+): Promise<PersistResult> {
   const bundle: Bundle = buildReferralBundle(input, {
     history: [],
     feedback: [],
@@ -52,14 +53,14 @@ export function persistReferralBundle(
   const validation = validateBundle(bundle);
 
   // Determine the previous version for this referral.
-  const prev = get<{ v: number }>(
-    "SELECT MAX(CAST(json_extract(content, '$.meta.versionId') AS INTEGER)) AS v FROM fhir_resources WHERE referral_id = ?",
+  const previous = await get<{ v: number | null }>(
+    `SELECT MAX(${jsonField("content", "meta.versionId", "int")}) AS v FROM fhir_resources WHERE referral_id = ?`,
     referralId,
   );
-  const version = (prev?.v ?? 0) + 1;
+  const version = (previous?.v ?? 0) + 1;
 
-  const removed = all<{ id: string }>("SELECT id FROM fhir_resources WHERE referral_id = ?", referralId).length;
-  run("DELETE FROM fhir_resources WHERE referral_id = ?", referralId);
+  const removed = (await all<{ id: string }>("SELECT id FROM fhir_resources WHERE referral_id = ?", referralId)).length;
+  await run("DELETE FROM fhir_resources WHERE referral_id = ?", referralId);
 
   const now = new Date().toISOString();
   let stored = 0;
@@ -78,14 +79,14 @@ export function persistReferralBundle(
       },
     };
 
-    const existing = get<{ id: string }>(
+    const existing = await get<{ id: string }>(
       "SELECT id FROM fhir_resources WHERE resource_type = ? AND resource_id = ?",
       stamped.resourceType,
       stamped.id!,
     );
 
     if (existing) {
-      run(
+      await run(
         `UPDATE fhir_resources SET content = ?, version_id = ?, last_updated = ?, source_facility_id = ?, created_by_user = ?, referral_id = ?
           WHERE id = ?`,
         JSON.stringify(stamped),
@@ -97,7 +98,7 @@ export function persistReferralBundle(
         existing.id,
       );
     } else {
-      run(
+      await run(
         `INSERT INTO fhir_resources (id, resource_type, resource_id, version_id, content, last_updated, source_facility_id, created_by_user, referral_id)
          VALUES (?,?,?,?,?,?,?,?,?)`,
         newId("fh"),
@@ -125,15 +126,15 @@ export function persistReferralBundle(
 }
 
 /** Count of stored resources, by type. */
-export function storeSummary(): Array<{ resourceType: string; count: number }> {
-  return all<{ resource_type: string; count: number }>(
+export async function storeSummary(): Promise<Array<{ resourceType: string; count: number }>> {
+  return (await all<{ resource_type: string; count: number }>(
     "SELECT resource_type, COUNT(*) AS count FROM fhir_resources GROUP BY resource_type ORDER BY count DESC",
-  ).map((r) => ({ resourceType: r.resource_type, count: r.count }));
+  )).map((r) => ({ resourceType: r.resource_type, count: r.count }));
 }
 
 /** Every reference in a stored resource, for the integrity view. */
-export function storedReferences(resourceType: string, resourceId: string): Reference[] {
-  const row = get<{ content: string }>(
+export async function storedReferences(resourceType: string, resourceId: string): Promise<Reference[]> {
+  const row = await get<{ content: string }>(
     "SELECT content FROM fhir_resources WHERE resource_type = ? AND resource_id = ?",
     resourceType,
     resourceId,

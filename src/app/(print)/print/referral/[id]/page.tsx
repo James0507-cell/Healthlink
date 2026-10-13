@@ -18,10 +18,10 @@ export default async function PrintReferralPage({ params }: { params: Promise<{ 
   const session = (await getSession())!;
   if (!hasPermission(session, PERMISSIONS.REFERRAL_READ_OWN_FACILITY)) redirect("/dashboard");
 
-  const detail = getReferralDetail(id);
+  const detail = await getReferralDetail(id);
   if (!detail) notFound();
 
-  const access = assertCanView(session, detail);
+  const access = await assertCanView(session, detail);
   if (!access.ok) redirect("/referrals");
 
   const side = viewerSide(session, detail);

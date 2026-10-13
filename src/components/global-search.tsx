@@ -34,6 +34,10 @@ export function GlobalSearchClient() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Debounce the query.
+  //
+  // The effect itself must stay synchronous so it can return a cleanup function.
+  // The asynchronous work happens inside the timer callback, which is properly
+  // async and whose promise is intentionally not awaited by React.
   useEffect(() => {
     const q = query.trim();
     if (q.length < 2) {

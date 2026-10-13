@@ -33,7 +33,7 @@ export default async function ExplorerPage({
   const session = await requirePageAccess(PERMISSIONS.FHIR_READ);
 
   const sp = await searchParams;
-  const summary = storeSummary();
+  const summary = await storeSummary();
   const totalResources = summary.reduce((a, b) => a + b.count, 0);
 
   const crossFacility = session.role === "hie_admin" || session.role === "privacy_auditor";
@@ -45,31 +45,39 @@ export default async function ExplorerPage({
   const scopeParams: unknown[] = crossFacility || !session.facilityId ? [] : [session.facilityId, session.facilityId];
 
   const visibleCount =
-    all<{ n: number }>(
+    (await all<{ n: number }>(
       `SELECT COUNT(*) AS n FROM fhir_resources f
          LEFT JOIN referrals r ON r.id = f.referral_id
         WHERE (${scopeSql}) OR f.referral_id IS NULL`,
       ...scopeParams,
-    )[0]?.n ?? 0;
+    ))[0]?.n ?? 0;
 
-  const types = summary
-    .map((s) => {
+  // Visible count per resource type. The per-type count needs its own query, so
+  // the mapping is awaited as a group: `map(async ...)` alone would yield an
+  // array of Promises, and the subsequent filter would receive Promises rather
+  // than the resolved objects.
+  const typesWithCounts = await Promise.all(
+    summary.map(async (s) => {
       const visible =
-        all<{ n: number }>(
-          `SELECT COUNT(*) AS n FROM fhir_resources f
-             LEFT JOIN referrals r ON r.id = f.referral_id
-            WHERE f.resource_type = ? AND ((${scopeSql}) OR f.referral_id IS NULL)`,
-          s.resourceType,
-          ...scopeParams,
+        (
+          await all<{ n: number }>(
+            `SELECT COUNT(*) AS n FROM fhir_resources f
+               LEFT JOIN referrals r ON r.id = f.referral_id
+              WHERE f.resource_type = ? AND ((${scopeSql}) OR f.referral_id IS NULL)`,
+            s.resourceType,
+            ...scopeParams,
+          )
         )[0]?.n ?? 0;
       return { ...s, visible };
-    })
-    .filter((s) => s.visible > 0);
+    }),
+  );
+
+  const types = typesWithCounts.filter((s) => s.visible > 0);
 
   const activeType = sp.type;
 
   const resources = activeType
-    ? all<{
+    ? await all<{
         resource_id: string;
         resource_type: string;
         version_id: number;

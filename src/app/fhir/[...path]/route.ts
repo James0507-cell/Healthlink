@@ -75,7 +75,7 @@ async function authenticate(request: NextRequest): Promise<FacadeCaller | null> 
 
   if (auth?.startsWith("Bearer ")) {
     const token = auth.slice(7).trim();
-    const row = get<{
+    const row = await get<{
       id: string;
       user_id: string;
       expires_at: string;
@@ -87,13 +87,13 @@ async function authenticate(request: NextRequest): Promise<FacadeCaller | null> 
     if (row.revoked_at) return null;
     if (new Date(row.expires_at) < new Date()) return null;
 
-    const user = get<{ id: string; full_name: string; role: string; facility_id: string | null }>(
+    const user = await get<{ id: string; full_name: string; role: string; facility_id: string | null }>(
       "SELECT id, full_name, role, facility_id FROM users WHERE id = ? AND active = 1",
       row.user_id,
     );
     if (!user) return null;
 
-    run("UPDATE api_tokens SET last_used_at = ? WHERE id = ?", new Date().toISOString(), row.id);
+    await run("UPDATE api_tokens SET last_used_at = ? WHERE id = ?", new Date().toISOString(), row.id);
 
     return {
       userId: user.id,
@@ -296,7 +296,7 @@ export async function GET(request: NextRequest) {
 
   const caller = await authenticate(request);
   if (!caller) {
-    writeAudit({
+    await writeAudit({
       action: "E",
       eventType: "security",
       eventSubtype: "facade-auth-failed",
@@ -387,8 +387,8 @@ function notSupported(interaction: string) {
 /* Read                                                                */
 /* ------------------------------------------------------------------ */
 
-function readById(resourceType: string, id: string, caller: FacadeCaller, request: NextRequest) {
-  const row = get<{
+async function readById(resourceType: string, id: string, caller: FacadeCaller, request: NextRequest) {
+  const row = await get<{
     resource_id: string;
     content: string;
     version_id: number;
@@ -402,12 +402,12 @@ function readById(resourceType: string, id: string, caller: FacadeCaller, reques
   }
 
   if (row.referral_id) {
-    const referral = get<{ referring_facility_id: string; receiving_facility_id: string; referral_number: string }>(
+    const referral = await get<{ referring_facility_id: string; receiving_facility_id: string; referral_number: string }>(
       "SELECT referring_facility_id, receiving_facility_id, referral_number FROM referrals WHERE id = ?",
       row.referral_id,
     );
     if (referral && !visibleToCaller(caller, referral.referring_facility_id, referral.receiving_facility_id)) {
-      writeAudit({
+      await writeAudit({
         action: "R",
         eventType: "security",
         eventSubtype: "facade-scope-denied",
@@ -437,14 +437,14 @@ function readById(resourceType: string, id: string, caller: FacadeCaller, reques
   return fhirJson(body);
 }
 
-function logRead(
+async function logRead(
   caller: FacadeCaller,
   resourceType: string,
   id: string,
   referralId: string | null,
   request: NextRequest,
 ) {
-  writeAudit({
+  await writeAudit({
     action: "R",
     eventType: "read",
     eventSubtype: "fhir-read",
@@ -467,7 +467,7 @@ function logRead(
 /* Search                                                              */
 /* ------------------------------------------------------------------ */
 
-function search(resourceType: string, caller: FacadeCaller, request: NextRequest) {
+async function search(resourceType: string, caller: FacadeCaller, request: NextRequest) {
   const sp = request.nextUrl.searchParams;
   const filters: string[] = ["resource_type = ?"];
   const params: unknown[] = [resourceType];
@@ -499,7 +499,7 @@ function search(resourceType: string, caller: FacadeCaller, request: NextRequest
   const status = sp.get("status");
   if (status && (resourceType === "Task" || resourceType === "ServiceRequest")) {
     // Task/ServiceRequest status lives inside the stored JSON; filter in memory.
-    const rows = all<{ resource_id: string; content: string; referral_id: string | null; last_updated: string }>(
+    const rows = await all<{ resource_id: string; content: string; referral_id: string | null; last_updated: string }>(
       `SELECT resource_id, content, referral_id, last_updated FROM fhir_resources WHERE ${filters.join(" AND ")} LIMIT 300`,
       ...params,
     );
@@ -515,7 +515,7 @@ function search(resourceType: string, caller: FacadeCaller, request: NextRequest
 
   const limit = Math.min(Math.max(Number.parseInt(sp.get("_count") ?? "50", 10) || 50, 1), 200);
 
-  const rows = all<{ resource_id: string; content: string; referral_id: string | null; last_updated: string }>(
+  const rows = await all<{ resource_id: string; content: string; referral_id: string | null; last_updated: string }>(
     `SELECT resource_id, content, referral_id, last_updated FROM fhir_resources
       WHERE ${filters.join(" AND ")}
       ORDER BY last_updated DESC
@@ -536,7 +536,7 @@ function search(resourceType: string, caller: FacadeCaller, request: NextRequest
   return bundleFromRows(rows, caller, request, sp);
 }
 
-function bundleFromRows(
+async function bundleFromRows(
   rows: Array<{ resource_id: string; content: string; referral_id: string | null; last_updated: string }>,
   caller: FacadeCaller,
   request: NextRequest,
@@ -547,7 +547,7 @@ function bundleFromRows(
 
   for (const row of rows) {
     if (row.referral_id) {
-      const referral = get<{ referring_facility_id: string; receiving_facility_id: string }>(
+      const referral = await get<{ referring_facility_id: string; receiving_facility_id: string }>(
         "SELECT referring_facility_id, receiving_facility_id FROM referrals WHERE id = ?",
         row.referral_id,
       );
@@ -564,7 +564,7 @@ function bundleFromRows(
     });
   }
 
-  writeAudit({
+  await writeAudit({
     action: "R",
     eventType: "search",
     eventSubtype: "fhir-search",
@@ -599,7 +599,7 @@ function bundleFromRows(
 /* ------------------------------------------------------------------ */
 
 async function referralBundle(referralId: string, caller: FacadeCaller, request: NextRequest) {
-  const referral = get<{
+  const referral = await get<{
     id: string;
     referral_number: string;
     referring_facility_id: string;
@@ -612,7 +612,7 @@ async function referralBundle(referralId: string, caller: FacadeCaller, request:
   }
 
   if (!visibleToCaller(caller, referral.referring_facility_id, referral.receiving_facility_id)) {
-    writeAudit({
+    await writeAudit({
       action: "R",
       eventType: "security",
       eventSubtype: "facade-scope-denied",
@@ -635,12 +635,12 @@ async function referralBundle(referralId: string, caller: FacadeCaller, request:
   }
 
   const { getReferralDetail, bundleForReferral } = await import("@/lib/referrals");
-  const detail = getReferralDetail(referralId);
+  const detail = await getReferralDetail(referralId);
   if (!detail) return outcome("error", "processing", "Referral data could not be assembled.", 500);
 
-  const bundle = bundleForReferral(detail);
+  const bundle = await bundleForReferral(detail);
 
-  writeAudit({
+  await writeAudit({
     action: "R",
     eventType: "read",
     eventSubtype: "fhir-bundle-read",
