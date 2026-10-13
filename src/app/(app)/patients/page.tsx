@@ -23,11 +23,11 @@ export default async function PatientsPage({
   const session = await requirePageAccess(PERMISSIONS.PATIENT_READ);
 
   const sp = await searchParams;
-  const patients = listPatients({ search: sp.q, limit: 200 });
+  const patients = await listPatients({ search: sp.q, limit: 200 });
 
   const counts = new Map<string, { total: number; active: number }>();
   for (const p of patients) {
-    const rows = all<{ status: string }>(
+    const rows = await all<{ status: string }>(
       "SELECT status FROM referrals WHERE patient_id = ? AND deleted_at IS NULL",
       p.id,
     );

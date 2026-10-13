@@ -20,15 +20,43 @@ Read `README.md` first. The important framing:
 ## Commands
 
 ```bash
-npm run dev               # dev server on :3000
+npm run dev               # dev server on :3000 (or $PORT)
 npm run build             # production build (must pass)
 npm run typecheck         # tsc --noEmit (must pass, zero errors)
-npm test                  # 81 checks across the FHIR, workflow and audit layers
+npm test                  # 111 checks across the FHIR, workflow and audit layers (SQLite)
+npm run test:postgres     # the same 111 checks against Postgres (needs the opt-in flag)
 npm run db:reset          # recreate the database and reload synthetic demo data
 npm run terminology:check # terminology subset coverage
 ```
 
-Run `npm run typecheck && npm test` before considering any change complete.
+Run `npm run typecheck && npm test` before considering any change complete. `npm run build` too if you
+touched routing, a Server Component boundary, or anything a client island imports.
+
+`npm test` must never be pointed at a live database — it deletes and re-seeds every table. It uses
+`data/healthlink-test.db` on SQLite; `npm run test:postgres` targets a separate `healthlink_test`
+database and refuses to start without `HEALTHLINK_TEST_POSTGRES=1`.
+
+## Two database backends
+
+`src/lib/dialect.ts` selects SQLite or Postgres from `DATABASE_URL`. Read it before writing SQL.
+
+- **All SQL is written in SQLite-flavoured syntax** with `?` placeholders. `db.ts` rewrites the
+  placeholders for Postgres at execution time. Write `?`, never `$1`.
+- **`all` / `get` / `run` / `exec` / `insert` / `update` return Promises and must be awaited.**
+  This is deliberate: Postgres is asynchronous over the network. A missing `await`
+  on a used result is a type error, but a missing `await` on a *discarded* result compiles
+  cleanly and silently does nothing — `npx tsx scripts/check-floating-promises.mts` catches that
+  class. Run it after touching async code.
+- **Never use `rowid`.** SQLite had it; Postgres does not. Order by the `seq` column instead.
+- **Never use `julianday()`, `json_extract()`, or `COUNT(*)` expecting a JS number.** Use
+  `hoursBetween()`, `jsonField()` and `countExpr()` from `dialect.ts`. Postgres returns `bigint` as a
+  string, which `db.ts` re-parses for `COUNT(*)` — but a cast you write by hand is your problem.
+- **Every column in a `GROUP BY` must be grouped or aggregated.** SQLite silently allowed selecting
+  a functionally-dependent column; Postgres rejects it. A `HAVING` clause cannot reference a
+  `SELECT` alias on Postgres.
+- **Add a schema column via `ADDITIVE_MIGRATIONS` in `db.ts`, not just the `CREATE TABLE` text.**
+  `CREATE TABLE IF NOT EXISTS` does not alter an existing table, and an index on a missing column
+  fails at startup. Test the migration against an existing database, not only a fresh one.
 
 ## Architecture rules
 
@@ -100,14 +128,36 @@ PSGC geographic codes are real. If you add a referral scenario, give it a plausi
 the dataset exists to be read by clinicians during evaluation.
 
 The mock data is **generated, not committed as a database**. A clone runs `npm run db:reset` to build
-`data/healthlink.db` from the seeder. Do not commit that file — `.gitignore` excludes it. Inspect
-what the seeder defines with `npm run demo:data`, and what a built database contains with
-`npm run demo:state`.
+the data from the seeder. Do not commit SQLite files — `.gitignore` excludes them. Inspect what the
+seeder defines with `npm run demo:data`, and what a built database contains with `npm run demo:state`.
+
+The seeder is **deterministic**: referral numbers and tracking codes are derived, not random, and
+`scripts/test-fhir.mts` asserts the specific values that `docs/EVALUATION-SCENARIO.md` quotes. If you
+change how they are generated, update that document and those assertions together.
 
 ## Environment
 
-`HEALTHLINK_SECRET` — session JWT signing key. Falls back to a development default; required in any
-real deployment. See `.env.example`.
+| Variable | Purpose |
+| --- | --- |
+| `HEALTHLINK_SECRET` | session JWT signing key. Falls back to a development default; **required in any real deployment** — without it, sessions can be forged with the published default. |
+| `DATABASE_URL` | selects Postgres when set and starting with `postgres`. Unset means SQLite. Use the pooled connection string. |
+| `HEALTHLINK_DB` | overrides the SQLite file path. Used by the test suite to isolate itself. |
+| `HEALTHLINK_TEST_POSTGRES` | must be `1` before the test suite will run against Postgres at all. |
+| `PGPOOL_MAX` | connection pool size (default 4). Small on purpose: serverless instances are short-lived and the pooler multiplexes. |
+| `HEALTHLINK_FHIR_BASE` | advertised base URL in the CapabilityStatement. |
+
+`.env.local` is git-ignored and is where a connection string belongs. Never commit one; the deployed
+value is set in the host's environment settings.
+
+### Hosting note
+
+Deploying to a serverless host **requires** `DATABASE_URL`. Functions there have a read-only
+filesystem apart from an ephemeral `/tmp`, so SQLite cannot persist a write — the app would fail on
+its first mutation, not at boot, which makes this easy to miss in a smoke test that only loads pages.
+
+For an unauthenticated reviewer-facing deployment, the sign-in page intentionally lists the demo
+accounts. Put a host-level password gate in front of the whole site rather than removing that list,
+which would break the evaluation walkthrough.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

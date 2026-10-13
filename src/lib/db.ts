@@ -1,26 +1,52 @@
 /**
  * HealthLink persistence layer.
  *
- * Uses the Node.js built-in SQLite driver (`node:sqlite`), so the prototype
- * needs no native compilation and no external database server. The database is
- * a single file under /data and is seeded with synthetic data only.
+ * Two backends behind one interface, chosen by `DATABASE_URL`:
+ *
+ *   unset        -> SQLite via the Node.js built-in driver (`node:sqlite`).
+ *                   Zero-config, file-based, used for local development and for
+ *                   offline evaluation sessions. No native compilation.
+ *   postgres://  -> PostgreSQL via `pg`. Required for serverless hosting such as
+ *                   Vercel, whose filesystem is read-only.
+ *
+ * Application SQL is written in SQLite-flavoured syntax and translated for
+ * Postgres at execution time by `dialect.ts`. See that module for how the
+ * placeholder rewrite works and why it is safe.
+ *
+ * API SHAPE
+ *
+ * `all`, `get`, `run`, `exec`, `insert` and `update` return Promises. That is a
+ * deliberate, breaking change from the earlier synchronous API: Postgres is
+ * asynchronous over the network, and pretending otherwise would have meant
+ * either a synchronous driver wrapper or duplicated code paths. Callers must
+ * `await`. The TypeScript compiler finds every site.
  *
  * Privacy design notes (RA 10173 alignment):
  *  - Passwords are stored as scrypt hashes with a per-user salt.
  *  - Audit events are append-only: writeAudit() never updates or deletes.
- *  - Attachment binaries are stored as received and can be purged by the
- *    retention sweep (see /api/admin/retention).
+ *  - The audit trail is hash-chained with a monotonic sequence number so the
+ *    chain's order is deterministic on both backends.
  */
 
-import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID, randomBytes, scryptSync, timingSafeEqual, createHash } from "node:crypto";
 
+import {
+  bindParam,
+  dialect,
+  isPostgres,
+  toPgPlaceholders,
+  type Dialect,
+} from "./dialect";
+
+export { dialect, isPostgres };
+export type { Dialect };
+
 export const DATA_DIR = join(process.cwd(), "data");
 
 /**
- * Resolve the database file path.
+ * Resolve the SQLite database file path.
  *
  * Deliberately a function, not a module-level constant. Module-level capture
  * happens when `db.ts` is first imported, and ESM hoists imports above any
@@ -32,27 +58,115 @@ export function dbPath(): string {
   return process.env.HEALTHLINK_DB ?? join(DATA_DIR, "healthlink.db");
 }
 
-let _db: DatabaseSync | null = null;
+/* ------------------------------------------------------------------ */
+/* SQLite handle                                                       */
+/* ------------------------------------------------------------------ */
 
-/** Open (once) and return the shared database handle. */
-export function db(): DatabaseSync {
-  if (_db) return _db;
+interface SqliteStatement {
+  all(...params: unknown[]): unknown[];
+  get(...params: unknown[]): unknown;
+  run(...params: unknown[]): unknown;
+}
+
+interface SqliteDatabase {
+  prepare(sql: string): SqliteStatement;
+  exec(sql: string): void;
+  close(): void;
+}
+
+let _sqlite: SqliteDatabase | null = null;
+
+/** Open (once) and return the shared SQLite handle. */
+export function sqlite(): SqliteDatabase {
+  if (_sqlite) return _sqlite;
+
+  // Imported lazily so that a Postgres deployment never loads the SQLite driver,
+  // and so the experimental-feature warning is not emitted when unused.
+  const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+
   const path = dbPath();
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  _db = new DatabaseSync(path);
-  _db.exec("PRAGMA journal_mode = WAL");
-  _db.exec("PRAGMA foreign_keys = ON");
-  return _db;
+
+  const handle = new DatabaseSync(path);
+  handle.exec("PRAGMA journal_mode = WAL");
+  handle.exec("PRAGMA foreign_keys = ON");
+  _sqlite = handle as unknown as SqliteDatabase;
+  return _sqlite;
 }
 
-/** Close the shared handle (used by scripts). */
-export function closeDb() {
-  if (_db) {
-    _db.close();
-    _db = null;
+/* ------------------------------------------------------------------ */
+/* Postgres pool                                                       */
+/* ------------------------------------------------------------------ */
+
+interface PgPool {
+  query(sql: string, params?: unknown[]): Promise<{ rows: unknown[]; rowCount: number | null }>;
+  end(): Promise<void>;
+}
+
+let _pool: PgPool | null = null;
+
+/**
+ * Open (once) and return the shared Postgres pool.
+ *
+ * The connection string is read at call time so tests can point at a different
+ * database without import-order games. `max` is small: serverless functions are
+ * short-lived and Neon's pooler multiplexes anyway, so a large pool per instance
+ * would only exhaust connections.
+ */
+export function postgres(): PgPool {
+  if (_pool) return _pool;
+
+  const pg = require("pg") as typeof import("pg");
+  const { Pool, types } = pg;
+  const url = process.env.DATABASE_URL?.trim();
+  if (!url) throw new Error("DATABASE_URL is not set but the postgres dialect was selected.");
+
+  // Postgres returns COUNT(*) as bigint, which node-postgres delivers as a STRING
+  // to avoid precision loss. Every count in this application is a small integer
+  // (rows in a demo database), and code throughout expects a number, so parse
+  // int8 as a number. Without this, `typeof total === "number"` fails and
+  // arithmetic silently concatenates.
+  types.setTypeParser(types.builtins.INT8, (v: string) => Number.parseInt(v, 10));
+
+  // NUMERIC (OID 1700) is also returned as a string. healthlink stores durations
+  // as REAL, but a cast to NUMERIC anywhere would surface as a string, so parse it
+  // too. Values here are measurements and hour counts, well within double range.
+  types.setTypeParser(types.builtins.NUMERIC, (v: string) => Number.parseFloat(v));
+
+  const pool = new Pool({
+    connectionString: url,
+    max: Number.parseInt(process.env.PGPOOL_MAX ?? "4", 10),
+    idleTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 15_000,
+    // Neon terminates connections that omit TLS.
+    ssl: url.includes("sslmode=require") ? { rejectUnauthorized: false } : undefined,
+  });
+
+  _pool = {
+    query: (sql, params) => pool.query(sql, params as never) as never,
+    end: () => pool.end(),
+  };
+  return _pool;
+}
+
+/** True when a handle has been opened (used by scripts to decide whether to close). */
+export function isOpen(): boolean {
+  return isPostgres() ? _pool !== null : _sqlite !== null;
+}
+
+/** Close whichever handle is open (used by scripts and tests). */
+export async function closeDb(): Promise<void> {
+  if (_pool) {
+    await _pool.end();
+    _pool = null;
+  }
+  if (_sqlite) {
+    _sqlite.close();
+    _sqlite = null;
   }
 }
+
 
 /* ------------------------------------------------------------------ */
 /* Schema                                                              */
@@ -395,6 +509,20 @@ CREATE INDEX IF NOT EXISTS idx_fhir_resources_referral ON fhir_resources(referra
 
 CREATE TABLE IF NOT EXISTS audit_events (
   id             TEXT PRIMARY KEY,
+  /**
+   * Monotonic sequence number, used ONLY for ordering.
+   *
+   * The hash chain must link records in a deterministic order. Ordering by
+   * occurred_at alone is ambiguous when two events share a millisecond, which
+   * happens whenever one request writes a workflow event and an audit row
+   * together. SQLite offered rowid as a tiebreaker; Postgres has none, so the
+   * order is made explicit here instead of relying on storage internals.
+   *
+   * Allocated in application code (see nextAuditSeq) rather than by a database
+   * sequence, so a back-dated seeder insert can be given a sequence consistent
+   * with its position in time.
+   */
+  seq            INTEGER,
   occurred_at    TEXT NOT NULL,
   action         TEXT NOT NULL,               -- C | R | U | D | E
   event_type     TEXT NOT NULL,
@@ -420,6 +548,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_occurred ON audit_events(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_seq ON audit_events(seq);
 CREATE INDEX IF NOT EXISTS idx_audit_referral ON audit_events(referral_id);
 CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor_user_id);
 
@@ -483,63 +612,262 @@ CREATE INDEX IF NOT EXISTS idx_messages_referral ON referral_messages(referral_i
 CREATE INDEX IF NOT EXISTS idx_consents_patient ON consents(patient_id);
 `;
 
-/** Create all tables if they do not exist. Safe to call repeatedly. */
-export function migrate() {
-  db().exec(SCHEMA_SQL);
+/**
+ * Create all tables if they do not exist, and apply additive column migrations.
+ *
+ * Safe to call repeatedly. Two concerns are handled:
+ *
+ *  1. A database created by an older build may be missing columns that later
+ *     schema text adds (for example audit_events.seq). `CREATE TABLE IF NOT
+ *     EXISTS` does not alter an existing table, and an index on a missing column
+ *     would fail, so additive columns are added explicitly first.
+ *
+ *  2. Postgres has no multi-statement exec over the pooled protocol, so the
+ *     schema is split into statements and issued in order.
+ */
+export async function migrate(): Promise<void> {
+  if (isPostgres()) {
+    // Additive migrations first, so the schema's index statements can succeed.
+    // Each is guarded on the table's existence, because on a brand-new database
+    // the table has not been created yet — `ALTER TABLE ... ADD COLUMN IF NOT
+    // EXISTS` still fails if the table itself is missing.
+    for (const m of ADDITIVE_MIGRATIONS) {
+      if (!(await tableExistsPostgres(m.table))) continue;
+      await postgres().query(`ALTER TABLE ${m.table} ADD COLUMN IF NOT EXISTS ${m.column} ${m.sqlType}`);
+    }
+    for (const s of splitStatements(SCHEMA_SQL)) {
+      await postgres().query(s);
+    }
+    return;
+  }
+
+  const handle = sqlite();
+
+  // SQLite has no `ADD COLUMN IF NOT EXISTS`, so check the column list first.
+  for (const m of ADDITIVE_MIGRATIONS) {
+    if (!tableExistsSqlite(handle, m.table)) continue;
+    if (columnExistsSqlite(handle, m.table, m.column)) continue;
+    handle.exec(`ALTER TABLE ${m.table} ADD COLUMN ${m.column} ${m.sqlType}`);
+  }
+
+  handle.exec(SCHEMA_SQL);
+}
+
+/** Is a table present in the current Postgres schema? */
+async function tableExistsPostgres(table: string): Promise<boolean> {
+  const row = await postgres().query(
+    "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1",
+    [table],
+  );
+  return row.rows.length > 0;
+}
+
+/**
+ * Columns added after the first release. Each is nullable, so applying it to an
+ * existing database cannot break existing rows.
+ */
+const ADDITIVE_MIGRATIONS: Array<{ table: string; column: string; sqlType: string }> = [
+  { table: "audit_events", column: "seq", sqlType: "INTEGER" },
+];
+
+function tableExistsSqlite(handle: SqliteDatabase, table: string): boolean {
+  const row = handle
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table) as { name?: string } | undefined;
+  return !!row?.name;
+}
+
+function columnExistsSqlite(handle: SqliteDatabase, table: string, column: string): boolean {
+  const rows = handle.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+  return rows.some((r) => r.name === column);
+}
+
+/**
+ * Split a DDL script into individual statements for Postgres.
+ *
+ * Naive `split(";")` would corrupt any statement containing a semicolon inside a
+ * string literal or a comment, so this walks the text the same way the
+ * placeholder rewriter does.
+ */
+function splitStatements(sql: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let i = 0;
+
+  while (i < sql.length) {
+    const ch = sql[i];
+
+    if (ch === "-" && sql[i + 1] === "-") {
+      while (i < sql.length && sql[i] !== "\n") {
+        current += sql[i];
+        i++;
+      }
+      continue;
+    }
+    if (ch === "/" && sql[i + 1] === "*") {
+      current += "/*";
+      i += 2;
+      while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) {
+        current += sql[i];
+        i++;
+      }
+      current += "*/";
+      i += 2;
+      continue;
+    }
+    if (ch === "'") {
+      current += ch;
+      i++;
+      while (i < sql.length) {
+        current += sql[i];
+        if (sql[i] === "'" && sql[i + 1] === "'") {
+          current += "'";
+          i += 2;
+          continue;
+        }
+        if (sql[i] === "'") {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (ch === ";") {
+      const trimmed = current.trim();
+      if (trimmed) out.push(trimmed);
+      current = "";
+      i++;
+      continue;
+    }
+    current += ch;
+    i++;
+  }
+
+  const last = current.trim();
+  if (last) out.push(last);
+  return out;
 }
 
 /* ------------------------------------------------------------------ */
 /* Query helpers                                                       */
+/*                                                                     */
+/* All async: Postgres is asynchronous over the network, so a synchronous */
+/* façade would be a lie. Callers must await.                          */
 /* ------------------------------------------------------------------ */
 
 type Row = Record<string, unknown>;
 
-export function all<T = Row>(sql: string, ...params: unknown[]): T[] {
-  const stmt = db().prepare(sql);
-  return stmt.all(...(params as never[])) as T[];
+/** Run a query and return all rows. */
+export async function all<T = Row>(sql: string, ...params: unknown[]): Promise<T[]> {
+  const bound = params.map(bindParam);
+
+  if (isPostgres()) {
+    const res = await postgres().query(applyDialect(sql), bound);
+    return res.rows as T[];
+  }
+
+  const handle = sqlite();
+  const { adaptSql } = sqliteAdapters(handle);
+  return handle.prepare(adaptSql(sql)).all(...(bound as never[])) as T[];
 }
 
-export function get<T = Row>(sql: string, ...params: unknown[]): T | undefined {
-  const stmt = db().prepare(sql);
-  return stmt.get(...(params as never[])) as T | undefined;
+/** Run a query and return the first row, or undefined. */
+export async function get<T = Row>(sql: string, ...params: unknown[]): Promise<T | undefined> {
+  const bound = params.map(bindParam);
+
+  if (isPostgres()) {
+    const res = await postgres().query(applyDialect(sql), bound);
+    return res.rows[0] as T | undefined;
+  }
+
+  const handle = sqlite();
+  const { adaptSql } = sqliteAdapters(handle);
+  return handle.prepare(adaptSql(sql)).get(...(bound as never[])) as T | undefined;
 }
 
-export function run(sql: string, ...params: unknown[]) {
-  const stmt = db().prepare(sql);
-  return stmt.run(...(params as never[]));
+/** Execute a statement. Returns the number of affected rows where known. */
+export async function run(sql: string, ...params: unknown[]): Promise<{ changes: number }> {
+  const bound = params.map(bindParam);
+
+  if (isPostgres()) {
+    const res = await postgres().query(applyDialect(sql), bound);
+    return { changes: res.rowCount ?? 0 };
+  }
+
+  const handle = sqlite();
+  const { adaptSql } = sqliteAdapters(handle);
+  const result = handle.prepare(adaptSql(sql)).run(...(bound as never[])) as { changes?: number };
+  return { changes: result.changes ?? 0 };
 }
 
-export function exec(sql: string) {
-  db().exec(sql);
+/** Execute a multi-statement script with no parameters. */
+export async function exec(sql: string): Promise<void> {
+  if (isPostgres()) {
+    for (const s of splitStatements(sql)) {
+      await postgres().query(applyDialect(s));
+    }
+    return;
+  }
+  sqlite().exec(sql);
 }
 
 /**
  * Insert a row from a plain object. Column names come from the object keys, so
  * placeholders can never drift out of step with the column list.
  */
-export function insert(table: string, record: Record<string, unknown>): void {
+export async function insert(table: string, record: Record<string, unknown>): Promise<void> {
   const cols = Object.keys(record);
   const placeholders = cols.map(() => "?").join(",");
   const sql = `INSERT INTO ${table} (${cols.join(",")}) VALUES (${placeholders})`;
-  db().prepare(sql).run(...(cols.map((c) => normalizeValue(record[c])) as never[]));
+  await run(sql, ...cols.map((c) => record[c]));
 }
 
 /** Update a row by primary key, from a plain object of changed columns. */
-export function update(table: string, idColumn: string, idValue: unknown, record: Record<string, unknown>): void {
+export async function update(
+  table: string,
+  idColumn: string,
+  idValue: unknown,
+  record: Record<string, unknown>,
+): Promise<void> {
   const cols = Object.keys(record);
   if (!cols.length) return;
   const sql = `UPDATE ${table} SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE ${idColumn} = ?`;
-  db()
-    .prepare(sql)
-    .run(...(cols.map((c) => normalizeValue(record[c])) as never[]), idValue as never);
+  await run(sql, ...cols.map((c) => record[c]), idValue);
 }
 
-/** SQLite only accepts null/number/bigint/string/Uint8Array. Coerce booleans. */
-function normalizeValue(v: unknown): unknown {
-  if (v === undefined || v === null) return null;
-  if (typeof v === "boolean") return v ? 1 : 0;
-  return v;
+/**
+ * Rewrite statement text for the active dialect.
+ *
+ * `insert`/`update` build SQL from column names, never from user input, so table
+ * and column identifiers are safe to interpolate. Values always travel as bound
+ * parameters.
+ */
+function applyDialect(sql: string): string {
+  return isPostgres() ? toPgPlaceholders(sql) : sql;
 }
+
+/**
+ * SQLite shims for the few statements that differ.
+ *
+ * Only two rewrites are needed, both one-way (Postgres -> SQLite) and both
+ * applied here so application SQL can be written once in the Postgres-compatible
+ * form where the two differ.
+ */
+function sqliteAdapters(handle: SqliteDatabase): {
+  adaptSql: (sql: string) => string;
+} {
+  void handle;
+  return {
+    adaptSql: (sql: string) => {
+      // `COUNT(*)::int` is Postgres cast syntax; SQLite wants plain COUNT(*).
+      // countExpr() emits it only for Postgres, so this is a safety net for any
+      // hand-written query that includes the cast.
+      return sql.replace(/COUNT\(\*\)::int/g, "COUNT(*)");
+    },
+  };
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Password hashing (scrypt, no external dependency)                   */
@@ -652,23 +980,48 @@ export function auditHashInput(row: AuditableRecord): string {
 }
 
 /**
+ * Allocate the next audit sequence number.
+ *
+ * Ordering for the hash chain is by `seq`, not by timestamp, so that two events
+ * written in the same millisecond still have a definite order. For back-dated
+ * seeding the sequence is derived from the target timestamp so that a seeded row
+ * lands in the right position relative to existing history.
+ *
+ * Concurrency: two simultaneous writers could read the same MAX(seq). The chain
+ * tolerates that only if the order is consistent, so callers that write audit rows
+ * concurrently should serialise on this. In practice every write path in
+ * HealthLink is already inside a single request handler, and the seeded data is
+ * written by one process.
+ */
+async function nextAuditSeq(occurredAt: string, backdated: boolean): Promise<number> {
+  if (backdated) {
+    const row = await get<{ n: number | null }>(
+      "SELECT MAX(seq) AS n FROM audit_events WHERE occurred_at <= ?",
+      occurredAt,
+    );
+    return (row?.n ?? 0) + 1;
+  }
+  const row = await get<{ n: number | null }>("SELECT MAX(seq) AS n FROM audit_events");
+  return (row?.n ?? 0) + 1;
+}
+
+/**
  * Append an audit event. The table is hash-chained: each record stores the hash
  * of the previous record, so tampering or deletion is detectable.
  */
-export function writeAudit(input: AuditInput): string {
+export async function writeAudit(input: AuditInput): Promise<string> {
   const id = newId("aud");
   const occurredAt = input.occurredAt ?? new Date().toISOString();
+  const backdated = input.occurredAt !== undefined;
 
-  // For back-dated seeding, chain onto the record that precedes this moment in
-  // time rather than onto whatever was inserted last.
-  const prev = input.occurredAt
-    ? get<{ record_hash: string | null }>(
-        "SELECT record_hash FROM audit_events WHERE occurred_at <= ? ORDER BY occurred_at DESC, rowid DESC LIMIT 1",
-        input.occurredAt,
-      )
-    : get<{ record_hash: string | null }>(
-        "SELECT record_hash FROM audit_events ORDER BY occurred_at DESC, rowid DESC LIMIT 1",
-      );
+  const seq = await nextAuditSeq(occurredAt, backdated);
+
+  // Chain onto whatever currently holds seq - 1, which is the record this one
+  // follows in the canonical order.
+  const prev = await get<{ record_hash: string | null }>(
+    "SELECT record_hash FROM audit_events WHERE seq = ?",
+    seq - 1,
+  );
   const previousHash = prev?.record_hash ?? null;
 
   const row: AuditableRecord = {
@@ -687,16 +1040,17 @@ export function writeAudit(input: AuditInput): string {
   };
   const recordHash = sha256(auditHashInput(row));
 
-  run(
+  await run(
     `INSERT INTO audit_events (
-       id, occurred_at, action, event_type, event_subtype,
+       id, seq, occurred_at, action, event_type, event_subtype,
        actor_user_id, actor_name, actor_role, actor_facility,
        patient_id, referral_id, entity_type, entity_id,
        outcome, outcome_desc, purpose_code, description,
        ip_address, user_agent, network_type, fhir_audit_id,
        previous_hash, record_hash
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     row.id,
+    seq,
     row.occurred_at,
     row.action,
     row.event_type,
@@ -724,15 +1078,21 @@ export function writeAudit(input: AuditInput): string {
   return id;
 }
 
-/** Verify the audit hash chain. Returns the first record where it breaks. */
-export function verifyAuditChain(): {
+/**
+ * Verify the audit hash chain.
+ *
+ * Ordered by `seq`, which is the order the hashes were linked in. Ordering by
+ * timestamp would be wrong when two events share a millisecond, and would report
+ * a false break.
+ */
+export async function verifyAuditChain(): Promise<{
   intact: boolean;
   checked: number;
   brokenAt: string | null;
   reason?: string;
-} {
-  const rows = all<AuditableRecord & { occurred_at: string }>(
-    "SELECT * FROM audit_events ORDER BY occurred_at ASC, rowid ASC",
+}> {
+  const rows = await all<AuditableRecord>(
+    "SELECT * FROM audit_events ORDER BY seq ASC",
   );
 
   let prev: string | null = null;
@@ -763,17 +1123,16 @@ export function verifyAuditChain(): {
 /* Settings                                                            */
 /* ------------------------------------------------------------------ */
 
-export function getSetting(key: string, fallback: string): string {
-  const row = get<{ value: string }>("SELECT value FROM system_settings WHERE key = ?", key);
+export async function getSetting(key: string, fallback: string): Promise<string> {
+  const row = await get<{ value: string }>("SELECT value FROM system_settings WHERE key = ?", key);
   return row?.value ?? fallback;
 }
 
-export function setSetting(key: string, value: string, updatedBy?: string) {
-  run(
+export async function setSetting(key: string, value: string, updatedBy?: string): Promise<void> {
+  await run(
     `INSERT INTO system_settings (key, value, updated_at, updated_by)
      VALUES (?,?,?,?)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-       updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
     key,
     value,
     new Date().toISOString(),

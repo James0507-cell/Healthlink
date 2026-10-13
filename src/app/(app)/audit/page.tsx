@@ -60,14 +60,14 @@ export default async function AuditPage({
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
   const total =
-    get<{ n: number }>(
+    (await get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM audit_events a
          LEFT JOIN referrals r ON r.id = a.referral_id
        ${whereSql}`,
       ...params,
-    )?.n ?? 0;
+    ))?.n ?? 0;
 
-  const rows = all<{
+  const rows = await all<{
     id: string;
     occurred_at: string;
     action: string;
@@ -88,22 +88,22 @@ export default async function AuditPage({
        FROM audit_events a
        LEFT JOIN referrals r ON r.id = a.referral_id
      ${whereSql}
-     ORDER BY a.occurred_at DESC, a.rowid DESC
+     ORDER BY a.occurred_at DESC, a.seq DESC
      LIMIT ? OFFSET ?`,
     ...params,
     PAGE_SIZE,
     (page - 1) * PAGE_SIZE,
   );
 
-  const chain = verifyAuditChain();
+  const chain = await verifyAuditChain();
   const totalPages = Math.max(Math.ceil(total / PAGE_SIZE), 1);
 
-  const eventTypes = all<{ event_type: string; n: number }>(
+  const eventTypes = await all<{ event_type: string; n: number }>(
     "SELECT event_type, COUNT(*) AS n FROM audit_events GROUP BY event_type ORDER BY n DESC",
   );
 
   const facilityNames = new Map(
-    all<{ id: string; name: string }>("SELECT id, name FROM facilities").map((f) => [f.id, f.name]),
+    (await all<{ id: string; name: string }>("SELECT id, name FROM facilities")).map((f) => [f.id, f.name]),
   );
 
   const exportQs = () => {

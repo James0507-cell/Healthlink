@@ -55,7 +55,7 @@ export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const { id } = await params;
-  const detail = getReferralDetail(id);
+  const detail = await getReferralDetail(id);
   return {
     title: detail ? `${detail.patient?.given_name ?? ""} ${detail.patient?.family_name ?? ""}`.trim() || detail.referral_number : "Referral",
   };
@@ -65,12 +65,12 @@ export default async function ReferralDetailPage({ params }: { params: Promise<{
   const { id } = await params;
   const session = await requirePageSession();
 
-  const detail = getReferralDetail(id);
+  const detail = await getReferralDetail(id);
   if (!detail) notFound();
 
   if (!hasPermission(session, PERMISSIONS.REFERRAL_READ_OWN_FACILITY)) redirect("/dashboard");
 
-  const access = assertCanView(session, detail);
+  const access = await assertCanView(session, detail);
   if (!access.ok) {
     return (
       <>
@@ -89,7 +89,7 @@ export default async function ReferralDetailPage({ params }: { params: Promise<{
 
   const side = viewerSide(session, detail);
   const state = STATES[detail.status as ReferralState];
-  const readiness = readinessFor(detail);
+  const readiness = await readinessFor(detail);
   const privacyAuditor = session.role === "privacy_auditor";
   const consentActive = detail.consent?.status === "active";
 
@@ -271,7 +271,7 @@ export default async function ReferralDetailPage({ params }: { params: Promise<{
                   errorCount={readiness.fhir.errorCount}
                   warningCount={readiness.fhir.warningCount}
                   infoCount={readiness.fhir.infoCount}
-                  resources={fhirResourceSummary(detail.id)}
+                  resources={await fhirResourceSummary(detail.id)}
                   bundleUrl={`/api/referrals/${detail.id}/bundle`}
                   jsonUrl={`/api/referrals/${detail.id}/bundle?inline=1`}
                 />
@@ -532,10 +532,10 @@ function TimeRow({ label, value }: { label: string; value: string }) {
  * Summarise the resources in this referral's bundle, annotating each with the
  * PH Core profile it was matched against (or the recorded gap).
  */
-function fhirResourceSummary(referralId: string): FhirResourceSummary[] {
-  const detail = getReferralDetail(referralId);
+async function fhirResourceSummary(referralId: string): Promise<FhirResourceSummary[]> {
+  const detail = await getReferralDetail(referralId);
   if (!detail) return [];
-  const bundle = bundleForReferral(detail);
+  const bundle = await bundleForReferral(detail);
   return (bundle.entry ?? []).map((entry, index) => {
     const res = entry.resource;
     const url = res?.meta?.profile?.[0];

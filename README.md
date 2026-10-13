@@ -22,8 +22,25 @@ npm run db:reset     # create the database and load synthetic demo data
 npm run dev          # http://localhost:3000
 ```
 
-Requires Node.js 20.9 or newer (uses the built-in `node:sqlite` driver, so there is no native
-compilation and no database server to install).
+Requires Node.js 20.9 or newer.
+
+HealthLink runs on **either SQLite or PostgreSQL**, chosen by `DATABASE_URL`:
+
+| `DATABASE_URL` | Backend | Use for |
+| --- | --- | --- |
+| unset | SQLite (`node:sqlite`, file at `data/healthlink.db`) | local development and offline evaluation — no database server to install |
+| `postgres://…` | PostgreSQL | hosted deployment, where the filesystem is read-only |
+
+SQLite needs no native compilation. To use Postgres, put the connection string in `.env.local`
+(which is git-ignored) or export it:
+
+```bash
+DATABASE_URL=postgresql://…   # pooled connection string
+HEALTHLINK_SECRET=…           # session signing key; required in any real deployment
+```
+
+Then run the same commands. `npm run db:reset` targets whichever backend is configured, so it seeds
+the Postgres database when `DATABASE_URL` is set.
 
 ### Demo accounts
 
@@ -79,7 +96,8 @@ src/
     login/  track/    public routes (sign-in, patient status lookup)
   components/         presentational components and client islands
   lib/
-    db.ts             SQLite schema, queries, hash-chained audit trail
+    db.ts             schema, dialect-aware queries, hash-chained audit trail
+    dialect.ts        SQLite/Postgres translation (placeholders, casts, helpers)
     auth.ts           roles (9), permissions (34), facility scoping, consent gate
     workflow.ts       referral state machine mapped onto FHIR Task
     referrals.ts      service layer: the only path that mutates a referral
@@ -113,6 +131,12 @@ patient care. Warnings are surfaced for review instead.
 previous record's hash, so tampering is detectable. `writeAudit` and `verifyAuditChain` share one
 canonical serialisation function so the fields written and the fields verified cannot drift apart.
 
+Ordering is by an explicit `seq` column, not by timestamp. Two audit events written in the same
+millisecond — which happens whenever one request records both a workflow event and an audit row —
+would otherwise have no definite order, and the chain would report a false break. SQLite offered
+`rowid` as a tiebreaker; Postgres has no such column, so the order is stored explicitly and the
+chain verifies identically on both backends.
+
 **Inline vitals are promoted to FHIR Observations.** Vitals are captured as columns (natural for a
 form) but exchanged as LOINC-coded `Observation` resources, including a derived BMI. A receiving
 system reads structured data rather than parsing narrative text.
@@ -143,9 +167,26 @@ mistaken for national standards.
 ## Tests
 
 ```bash
-npm test                  # 81 checks: FHIR validation, mapping, workflow, audit chain
+npm test                  # 111 checks: FHIR validation, mapping, workflow, audit chain
+npm run test:postgres     # the same 111 checks against PostgreSQL
 npm run terminology:check # terminology subset coverage against referral reasons
 npm run typecheck         # TypeScript
+```
+
+`npm test` uses its own SQLite file (`data/healthlink-test.db`), so a test run can never contaminate
+the demonstration dataset.
+
+`npm run test:postgres` runs the identical suite against Postgres. It is a separate command with an
+explicit opt-in (`HEALTHLINK_TEST_POSTGRES=1`) because the suite deletes and re-seeds every table,
+and it targets a dedicated `healthlink_test` database rather than the demo one. Running the same
+assertions on both backends is what proves the dialect port is faithful — including the audit hash
+chain, which must verify identically on each.
+
+Two further verification scripts exist for deployment checks:
+
+```bash
+npm run verify:postgres   # schema, seed, hash chain, tamper detection, report arithmetic
+npm run verify:http       # starts the production server and exercises the real HTTP surface
 ```
 
 The test suite covers the FHIR layer end to end: validation of seeded and runtime-created referrals,
@@ -176,13 +217,14 @@ about referral practice in Davao City.
 
 ### Where the demo data lives
 
-The database file is **not committed**. It is generated from `src/lib/seed.ts`, which is committed.
+The database is **not committed**. It is generated from `src/lib/seed.ts`, which is committed.
 A clone therefore starts with no data until you seed it:
 
 ```bash
-npm run db:reset    # builds data/healthlink.db from the seeder
-npm run demo:data   # what the seeder defines (counts and codes)
-npm run demo:state  # what a built database contains, with referral numbers and tracking codes
+npm run db:reset        # builds the database from the seeder (either backend)
+npm run db:reset:sqlite # forces SQLite even when DATABASE_URL is set
+npm run demo:data       # what the seeder defines (counts and codes)
+npm run demo:state      # what a built database contains, with referral numbers and tracking codes
 ```
 
 The seeder defines 6 facilities, 18 staff accounts, 8 patients and 6 referral scenarios spanning the
@@ -191,6 +233,46 @@ so the values quoted in `docs/EVALUATION-SCENARIO.md` stay valid across reseeds.
 
 This arrangement keeps the repository small and reviewable: a reader can see exactly what synthetic
 data the prototype uses by reading one file, rather than inferring it from a binary database.
+
+### Deploying it
+
+HealthLink runs on serverless hosting, but **only with a Postgres `DATABASE_URL`**. Serverless
+functions have a read-only filesystem except for an ephemeral `/tmp`, so the SQLite file cannot be
+used there — with no `DATABASE_URL` the deployed app would fail on its first write.
+
+On Vercel:
+
+1. Push the repository and import it as a project. The Next.js defaults need no changes.
+2. Create a Postgres database (Neon and Vercel Postgres both work) and copy its **pooled** connection
+   string.
+3. Set two environment variables in the project settings:
+
+   | Variable | Value |
+   | --- | --- |
+   | `DATABASE_URL` | the pooled Postgres connection string |
+   | `HEALTHLINK_SECRET` | a fresh random value, e.g. `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
+
+4. Seed the database once, from a machine that can reach it:
+
+   ```bash
+   DATABASE_URL=postgresql://… npm run db:reset
+   ```
+
+`HEALTHLINK_SECRET` must be set. Without it the app falls back to the development default that is
+published in this repository, and session cookies could be forged.
+
+Region choice matters more than it looks: keep the database and the functions in the same region.
+A serverless function in one region querying a database on another continent turns every page render
+into a series of cross-ocean round trips. On Neon's free tier, note that a suspended database adds a
+cold-start delay to the first request after a period of inactivity.
+
+### Sharing it with a reviewer
+
+The prototype has no built-in access control above the application login, and the sign-in screen
+lists the demo accounts — which is exactly what you want for an evaluation session, and not what you
+want on an open URL. If the deployment will be publicly reachable for any length of time, put a
+password gate in front of it (for example Vercel's own password protection, or a hosting-level
+basic-auth rule) and treat the demo accounts as *inside* that perimeter.
 
 ---
 

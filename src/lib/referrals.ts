@@ -15,6 +15,7 @@
  */
 
 import { all, get, run, newId, trackingCode, writeAudit, insert, type AuditInput } from "./db";
+import { hoursBetween } from "./dialect";
 import {
   canAccessReferral,
   checkConsentGate,
@@ -175,7 +176,7 @@ export interface ListReferralsOptions {
  * List referrals visible to the session, honouring facility scoping.
  * Cross-facility roles see everything.
  */
-export function listReferrals(session: Session, opts: ListReferralsOptions = {}): { rows: ReferralListRow[]; total: number } {
+export async function listReferrals(session: Session, opts: ListReferralsOptions = {}): Promise<{ rows: ReferralListRow[]; total: number }> {
   const where: string[] = ["r.deleted_at IS NULL"];
   const params: unknown[] = [];
 
@@ -224,19 +225,19 @@ export function listReferrals(session: Session, opts: ListReferralsOptions = {})
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
   const total =
-    get<{ n: number }>(
+    (await get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM referrals r
          JOIN patients p ON p.id = r.patient_id
          JOIN facilities rf ON rf.id = r.referring_facility_id
          JOIN facilities rc ON rc.id = r.receiving_facility_id
        ${whereSql}`,
       ...params,
-    )?.n ?? 0;
+    ))?.n ?? 0;
 
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
   const offset = Math.max(opts.offset ?? 0, 0);
 
-  const rows = all<ReferralListRow>(
+  const rows = await all<ReferralListRow>(
     `${LIST_SELECT} ${whereSql}
      ORDER BY
        CASE r.priority WHEN 'stat' THEN 0 WHEN 'asap' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END,
@@ -251,7 +252,7 @@ export function listReferrals(session: Session, opts: ListReferralsOptions = {})
 }
 
 /** Referral counts by state for the dashboard and worklists. */
-export function referralCounts(session: Session, facilityId?: string | null) {
+export async function referralCounts(session: Session, facilityId?: string | null) {
   const crossFacility = session.role === "hie_admin" || session.role === "privacy_auditor";
   const fid = facilityId ?? session.facilityId;
 
@@ -266,57 +267,57 @@ export function referralCounts(session: Session, facilityId?: string | null) {
     params.push(facilityId, facilityId);
   }
 
-  return all<{ status: string; n: number }>(
+  return await all<{ status: string; n: number }>(
     `SELECT r.status, COUNT(*) AS n FROM referrals r WHERE ${where} GROUP BY r.status`,
     ...params,
   );
 }
 
-export function getReferralDetail(id: string): ReferralDetail | null {
-  const referral = get<ReferralRow>("SELECT * FROM referrals WHERE id = ? AND deleted_at IS NULL", id);
+export async function getReferralDetail(id: string): Promise<ReferralDetail | null> {
+  const referral = await get<ReferralRow>("SELECT * FROM referrals WHERE id = ? AND deleted_at IS NULL", id);
   if (!referral) return null;
 
-  const patient = get<PatientRow>("SELECT * FROM patients WHERE id = ?", referral.patient_id);
-  const referringFacility = get<FacilityRow>("SELECT * FROM facilities WHERE id = ?", referral.referring_facility_id);
-  const receivingFacility = get<FacilityRow>("SELECT * FROM facilities WHERE id = ?", referral.receiving_facility_id);
+  const patient = await get<PatientRow>("SELECT * FROM patients WHERE id = ?", referral.patient_id);
+  const referringFacility = await get<FacilityRow>("SELECT * FROM facilities WHERE id = ?", referral.referring_facility_id);
+  const receivingFacility = await get<FacilityRow>("SELECT * FROM facilities WHERE id = ?", referral.receiving_facility_id);
   if (!patient || !referringFacility || !receivingFacility) return null;
 
   const referringUser = referral.referring_user_id
-    ? (get<UserRow>("SELECT * FROM users WHERE id = ?", referral.referring_user_id) ?? null)
+    ? (await get<UserRow>("SELECT * FROM users WHERE id = ?", referral.referring_user_id) ?? null)
     : null;
   const receivingUser = referral.receiving_user_id
-    ? (get<UserRow>("SELECT * FROM users WHERE id = ?", referral.receiving_user_id) ?? null)
+    ? (await get<UserRow>("SELECT * FROM users WHERE id = ?", referral.receiving_user_id) ?? null)
     : null;
 
-  const diagnoses = all<DiagnosisRow>(
+  const diagnoses = await all<DiagnosisRow>(
     "SELECT * FROM referral_diagnoses WHERE referral_id = ? ORDER BY sequence",
     id,
   );
-  const observations = all<ObservationRow>(
+  const observations = await all<ObservationRow>(
     "SELECT * FROM referral_observations WHERE referral_id = ? ORDER BY sequence",
     id,
   );
-  const medications = all<MedicationRow>(
+  const medications = await all<MedicationRow>(
     "SELECT * FROM referral_medications WHERE referral_id = ? ORDER BY sequence",
     id,
   );
-  const allergies = all<AllergyRow>(
+  const allergies = await all<AllergyRow>(
     "SELECT * FROM referral_allergies WHERE referral_id = ? ORDER BY sequence",
     id,
   );
-  const attachments = all<AttachmentRow>(
+  const attachments = await all<AttachmentRow>(
     "SELECT id, title, doc_type_code, doc_type_display, content_type, size_bytes, content_text, created_at, sha256 FROM referral_attachments WHERE referral_id = ? ORDER BY created_at",
     id,
   );
   const consent = referral.consent_id
-    ? (get<ConsentRow>("SELECT * FROM consents WHERE id = ?", referral.consent_id) ?? null)
+    ? (await get<ConsentRow>("SELECT * FROM consents WHERE id = ?", referral.consent_id) ?? null)
     : null;
 
-  const events = all<ReferralEvent>(
+  const events = await all<ReferralEvent>(
     "SELECT * FROM referral_events WHERE referral_id = ? ORDER BY sequence",
     id,
   );
-  const messages = all<ReferralMessage>(
+  const messages = await all<ReferralMessage>(
     "SELECT * FROM referral_messages WHERE referral_id = ? ORDER BY created_at",
     id,
   );
@@ -395,8 +396,8 @@ export function mappingInputFor(
 }
 
 /** Build the full FHIR transaction Bundle for a referral. */
-export function bundleForReferral(detail: ReferralDetail, actorUser?: UserRow | null): Bundle {
-  const input = mappingInputFor(detail, actorUser);
+export async function bundleForReferral(detail: ReferralDetail, actorUser?: UserRow | null): Promise<Bundle> {
+  const input = await mappingInputFor(detail, actorUser);
   return buildReferralBundle(input, {
     history: detail.events.map((e) => ({
       to_status: e.to_status,
@@ -419,26 +420,26 @@ export function bundleForReferral(detail: ReferralDetail, actorUser?: UserRow | 
 }
 
 /** Validate the referral package. */
-export function validateReferral(detail: ReferralDetail, actorUser?: UserRow | null) {
-  const bundle = bundleForReferral(detail, actorUser);
+export async function validateReferral(detail: ReferralDetail, actorUser?: UserRow | null) {
+  const bundle = await bundleForReferral(detail, actorUser);
   return validateBundle(bundle, { phCore: true });
 }
 
 /** Pre-routing readiness for a referral. */
-export function readinessFor(detail: ReferralDetail): {
+export async function readinessFor(detail: ReferralDetail): Promise<{
   requirements: RoutingRequirement[];
   blocking: RoutingRequirement[];
   advisory: RoutingRequirement[];
   ready: boolean;
   fhir: ReturnType<typeof validateBundle>;
-} {
-  const fhir = validateReferral(detail);
+}> {
+  const fhir = await validateReferral(detail);
   const basis = LAWFUL_BASIS[detail.lawful_basis_code];
 
   // Inline vitals count as objective findings: they are promoted to FHIR
   // Observations by the mapper, so a referral with vitals does carry structured
   // observations even when no separate result rows were captured.
-  const input = mappingInputFor(detail);
+  const input = await mappingInputFor(detail);
   const observationCount = observationsFor(input).length;
 
   const requirements = routingChecklist({
@@ -531,23 +532,23 @@ export interface CreateReferralInput {
 }
 
 /** Create a referral in `draft` state, together with its consent record. */
-export function createReferral(
+export async function createReferral(
   session: Session,
   input: CreateReferralInput,
   meta: { ip?: string; userAgent?: string } = {},
-): { id: string; referralNumber: string; trackingCode: string; validation: ValidationResult } {
+): Promise<{ id: string; referralNumber: string; trackingCode: string; validation: ValidationResult }> {
   if (!hasPermission(session, PERMISSIONS.REFERRAL_CREATE)) {
     throw new Error("FORBIDDEN: referral:create");
   }
   if (!session.facilityId) throw new Error("FORBIDDEN: no facility assigned to your account.");
 
-  const patient = get<PatientRow>("SELECT * FROM patients WHERE id = ?", input.patientId);
+  const patient = await get<PatientRow>("SELECT * FROM patients WHERE id = ?", input.patientId);
   if (!patient) throw new Error("NOT_FOUND: patient");
 
-  const receiving = get<FacilityRow>("SELECT * FROM facilities WHERE id = ?", input.receivingFacilityId);
+  const receiving = await get<FacilityRow>("SELECT * FROM facilities WHERE id = ?", input.receivingFacilityId);
   if (!receiving) throw new Error("NOT_FOUND: receiving facility");
 
-  const referring = get<FacilityRow>("SELECT * FROM facilities WHERE id = ?", session.facilityId);
+  const referring = await get<FacilityRow>("SELECT * FROM facilities WHERE id = ?", session.facilityId);
   if (!referring) throw new Error("NOT_FOUND: referring facility");
 
   if (referring.id === receiving.id) {
@@ -572,12 +573,12 @@ export function createReferral(
   // renumbered, and it silently reproduces an existing number.
   const facilityCode = facilityShortCode(referring.name, referring.short_name);
   const prefix = `HL-${year}-${facilityCode}-`;
-  const highest = get<{ referral_number: string }>(
+  const highest = (await get<{ referral_number: string }>(
     `SELECT referral_number FROM referrals
       WHERE referral_number LIKE ?
       ORDER BY referral_number DESC LIMIT 1`,
     `${prefix}%`,
-  )?.referral_number;
+  ))?.referral_number;
   const lastSequence = highest ? Number.parseInt(highest.slice(prefix.length), 10) : 0;
   const sequence = (Number.isFinite(lastSequence) ? lastSequence : 0) + 1;
   const referralNumber = formatReferralNumber(year, facilityCode, sequence);
@@ -596,7 +597,7 @@ export function createReferral(
   {
     consentId = newId("con");
     const requiresAuthorisation = basis.requiresConsentRecord;
-    insert("consents", {
+    await insert("consents", {
       id: consentId,
       patient_id: input.patientId,
       referral_id: id,
@@ -630,7 +631,7 @@ export function createReferral(
 
   // Inserted via the object helper so the column list and values cannot drift
   // apart. A hand-written placeholder list previously omitted a column here.
-  insert("referrals", {
+  await insert("referrals", {
     id,
     referral_number: referralNumber,
     tracking_code: track,
@@ -680,8 +681,8 @@ export function createReferral(
     retention_until: new Date(now.getTime() + 7 * 365 * 86_400_000).toISOString(),
   });
 
-  input.diagnoses.forEach((d, i) => {
-    run(
+  for (const [i, d] of input.diagnoses.entries()) {
+    await run(
       `INSERT INTO referral_diagnoses (id, referral_id, system, code, display, role, certainty, onset_date, sequence)
        VALUES (?,?,?,?,?,?,?,?,?)`,
       newId("dx"),
@@ -694,10 +695,10 @@ export function createReferral(
       d.onsetDate ?? null,
       i,
     );
-  });
+  }
 
-  input.observations.forEach((o, i) => {
-    run(
+  for (const [i, o] of input.observations.entries()) {
+    await run(
       `INSERT INTO referral_observations (
          id, referral_id, system, code, display, category, value_num, value_text,
          unit, ucum_code, ref_low, ref_high, effective_at, sequence
@@ -717,10 +718,10 @@ export function createReferral(
       now.toISOString(),
       i,
     );
-  });
+  }
 
-  input.medications.forEach((m, i) => {
-    run(
+  for (const [i, m] of input.medications.entries()) {
+    await run(
       `INSERT INTO referral_medications (id, referral_id, medication, fda_cpr, dose, route, frequency, status, started_on, sequence)
        VALUES (?,?,?,?,?,?,?, 'active', ?, ?)`,
       newId("med"),
@@ -733,10 +734,10 @@ export function createReferral(
       m.startedOn ?? null,
       i,
     );
-  });
+  }
 
-  input.allergies.forEach((a, i) => {
-    run(
+  for (const [i, a] of input.allergies.entries()) {
+    await run(
       `INSERT INTO referral_allergies (id, referral_id, system, code, display, reaction, criticality, category, sequence)
        VALUES (?,?,?,?,?,?,?,?,?)`,
       newId("alg"),
@@ -749,9 +750,9 @@ export function createReferral(
       a.category ?? null,
       i,
     );
-  });
+  }
 
-  run(
+  await run(
     `INSERT INTO referral_events (
        id, referral_id, sequence, from_status, to_status, action,
        fhir_task_status, business_status, actor_user_id, actor_name, actor_role,
@@ -767,10 +768,10 @@ export function createReferral(
     now.toISOString(),
   );
 
-  const detail = getReferralDetail(id)!;
-  const validation = validateReferral(detail, actorToUserRow(session));
+  const detail = (await getReferralDetail(id))!;
+  const validation = await validateReferral(detail, await actorToUserRow(session));
 
-  writeAudit({
+  await writeAudit({
     action: "C",
     eventType: "create",
     actorUserId: session.id,
@@ -793,8 +794,8 @@ export function createReferral(
 }
 
 /** Convert a session into the UserRow shape the mapper expects. */
-export function actorToUserRow(session: Session): UserRow {
-  const row = get<UserRow>("SELECT * FROM users WHERE id = ?", session.id);
+export async function actorToUserRow(session: Session): Promise<UserRow> {
+  const row = await get<UserRow>("SELECT * FROM users WHERE id = ?", session.id);
   return (
     row ?? {
       id: session.id,
@@ -839,12 +840,12 @@ export interface TransitionResult {
  * Perform a workflow transition. This is the only supported way to change
  * referral state. Every path through it logs to the audit trail.
  */
-export function transitionReferral(
+export async function transitionReferral(
   session: Session,
   input: TransitionInput,
   meta: { ip?: string; userAgent?: string } = {},
-): TransitionResult {
-  const detail = getReferralDetail(input.referralId);
+): Promise<TransitionResult> {
+  const detail = await getReferralDetail(input.referralId);
   if (!detail) return { ok: false, message: "Referral not found." };
 
   const side = viewerSide(session, detail);
@@ -863,7 +864,7 @@ export function transitionReferral(
     side: transitionSide,
   });
   if (!decision.allowed) {
-    writeAudit({
+    await writeAudit({
       action: "E",
       eventType: "security",
       eventSubtype: "authorisation-denied",
@@ -906,7 +907,7 @@ export function transitionReferral(
     session,
   );
   if (!consentDecision.allowed) {
-    writeAudit({
+    await writeAudit({
       action: "E",
       eventType: "consent",
       eventSubtype: "gate-blocked",
@@ -937,10 +938,10 @@ export function transitionReferral(
 
   // 5. Routing pre-flight: validation must pass before a referral is transmitted
   if (input.action === "submit") {
-    const readiness = readinessFor(detail);
+    const readiness = await readinessFor(detail);
     if (!readiness.ready) {
       const list = readiness.blocking.map((b) => `- ${b.label}${b.detail ? `: ${b.detail}` : ""}`).join("\n");
-      writeAudit({
+      await writeAudit({
         action: "E",
         eventType: "route",
         eventSubtype: "blocked",
@@ -975,12 +976,12 @@ export function transitionReferral(
 
   // Optional supporting writes
   if (input.additionalObservations?.length) {
-    const existing = get<{ n: number }>(
+    const existing = (await get<{ n: number }>(
       "SELECT COUNT(*) AS n FROM referral_observations WHERE referral_id = ?",
       detail.id,
-    )?.n ?? 0;
-    input.additionalObservations.forEach((o, i) => {
-      run(
+    ))?.n ?? 0;
+    for (const [i, o] of input.additionalObservations.entries()) {
+      await run(
         `INSERT INTO referral_observations (
            id, referral_id, system, code, display, category, value_num, value_text,
            unit, ucum_code, ref_low, ref_high, effective_at, sequence
@@ -1000,14 +1001,14 @@ export function transitionReferral(
         now,
         existing + i,
       );
-    });
+    }
   }
 
   if (input.additionalNarrative?.trim()) {
     const existing = detail.receiving_notes
       ? `${detail.receiving_notes}\n\n`
       : "";
-    run(
+    await run(
       "UPDATE referrals SET receiving_notes = ? WHERE id = ?",
       `${existing}[Information supplied] ${input.additionalNarrative.trim()}`,
       detail.id,
@@ -1055,13 +1056,17 @@ export function transitionReferral(
   }
 
   params.push(detail.id);
-  run(`UPDATE referrals SET ${updates.join(", ")} WHERE id = ?`, ...params);
+  await run(`UPDATE referrals SET ${updates.join(", ")} WHERE id = ?`, ...params);
 
   // Event row
   const stateDef = STATES[nextState];
-  const seq = (get<{ n: number }>("SELECT COALESCE(MAX(sequence),0) AS n FROM referral_events WHERE referral_id = ?", detail.id)?.n ?? 0) + 1;
+  const seq =
+    ((await get<{ n: number }>(
+      "SELECT COALESCE(MAX(sequence),0) AS n FROM referral_events WHERE referral_id = ?",
+      detail.id,
+    ))?.n ?? 0) + 1;
 
-  run(
+  await run(
     `INSERT INTO referral_events (
        id, referral_id, sequence, from_status, to_status, action,
        fhir_task_status, business_status, actor_user_id, actor_name, actor_role,
@@ -1087,7 +1092,7 @@ export function transitionReferral(
   // Feedback message
   if (input.message?.body?.trim()) {
     const recipientFacility = side === "referring" ? detail.receivingFacility.id : detail.referringFacility.id;
-    run(
+    await run(
       `INSERT INTO referral_messages (
          id, referral_id, kind, subject, body, sender_user_id, sender_name,
          sender_facility, recipient_facility, recipient_role, created_at
@@ -1108,14 +1113,14 @@ export function transitionReferral(
 
   // Re-validate so the caller can surface the updated FHIR state, and persist
   // the standardised representation that a receiving system will read.
-  const updated = getReferralDetail(detail.id)!;
-  const validation = validateReferral(updated, actorToUserRow(session));
+  const updated = (await getReferralDetail(detail.id))!;
+  const validation = await validateReferral(updated, await actorToUserRow(session));
 
   let fhirVersion = detail.fhir_bundle_version;
   try {
-    const persisted = persistReferralBundle(
+    const persisted = await persistReferralBundle(
       detail.id,
-      mappingInputFor(updated, actorToUserRow(session)),
+      await mappingInputFor(updated, await actorToUserRow(session)),
       { sourceFacilityId: session.facilityId, createdByUser: session.id },
     );
     fhirVersion = persisted.version;
@@ -1123,7 +1128,7 @@ export function transitionReferral(
     console.error("Failed to persist referral bundle:", e);
   }
 
-  run(
+  await run(
     "UPDATE referrals SET fhir_validation_errors = ?, fhir_validation_warnings = ?, fhir_bundle_version = ? WHERE id = ?",
     validation.errorCount,
     validation.warningCount,
@@ -1131,7 +1136,7 @@ export function transitionReferral(
     detail.id,
   );
 
-  writeAudit({
+  await writeAudit({
     action: "U",
     eventType: "workflow",
     eventSubtype: input.action,
@@ -1161,13 +1166,13 @@ export function transitionReferral(
 }
 
 /** Add a document attachment to a draft or returned referral. */
-export function addAttachment(
+export async function addAttachment(
   session: Session,
   referralId: string,
   att: { title: string; docTypeCode: string; docTypeDisplay: string; contentText: string; contentType?: string },
   meta: { ip?: string; userAgent?: string } = {},
-): { ok: boolean; message: string; id?: string } {
-  const detail = getReferralDetail(referralId);
+): Promise<{ ok: boolean; message: string; id?: string }> {
+  const detail = await getReferralDetail(referralId);
   if (!detail) return { ok: false, message: "Referral not found." };
 
   if (!hasPermission(session, PERMISSIONS.ATTACHMENT_ADD)) {
@@ -1182,7 +1187,7 @@ export function addAttachment(
   const id = newId("att");
   const now = new Date();
   const text = att.contentText;
-  run(
+  await run(
     `INSERT INTO referral_attachments (
        id, referral_id, title, doc_type_code, doc_type_display, content_type,
        size_bytes, content_text, author_user_id, created_at, sha256, fhir_docref_id, retention_until
@@ -1202,7 +1207,7 @@ export function addAttachment(
     new Date(now.getTime() + 7 * 365 * 86_400_000).toISOString(),
   );
 
-  writeAudit({
+  await writeAudit({
     action: "C",
     eventType: "create",
     eventSubtype: "attachment",
@@ -1229,12 +1234,12 @@ function sha256Of(text: string): string {
 }
 
 /** Update the clinical content of a referral that is still a draft. */
-export function updateDraft(
+export async function updateDraft(
   session: Session,
   referralId: string,
   patch: Partial<CreateReferralInput>,
-): { ok: boolean; message: string } {
-  const detail = getReferralDetail(referralId);
+): Promise<{ ok: boolean; message: string }> {
+  const detail = await getReferralDetail(referralId);
   if (!detail) return { ok: false, message: "Referral not found." };
 
   const side = viewerSide(session, detail);
@@ -1290,13 +1295,13 @@ export function updateDraft(
 
   fields.push(["updated_at", new Date().toISOString()]);
   const assignments = fields.map(([c]) => `${c} = ?`).join(", ");
-  run(
+  await run(
     `UPDATE referrals SET ${assignments} WHERE id = ?`,
     ...fields.map(([, v]) => v ?? null),
     referralId,
   );
 
-  writeAudit({
+  await writeAudit({
     action: "U",
     eventType: "update",
     actorUserId: session.id,
@@ -1339,8 +1344,8 @@ export interface TrackingResult {
  * printed on the patient's referral slip. Deliberately returns the minimum
  * information needed to answer "where is my referral?" - no clinical detail.
  */
-export function trackReferral(referralNumber: string, code: string): TrackingResult | null {
-  const row = get<ReferralRow & { patient_family: string; patient_given: string }>(
+export async function trackReferral(referralNumber: string, code: string): Promise<TrackingResult | null> {
+  const row = await get<ReferralRow & { patient_family: string; patient_given: string }>(
     `SELECT r.*, p.family_name AS patient_family, p.given_name AS patient_given
        FROM referrals r JOIN patients p ON p.id = r.patient_id
       WHERE r.referral_number = ? AND r.tracking_code = ? AND r.deleted_at IS NULL`,
@@ -1349,9 +1354,9 @@ export function trackReferral(referralNumber: string, code: string): TrackingRes
   );
   if (!row) return null;
 
-  const referring = get<FacilityRow>("SELECT * FROM facilities WHERE id = ?", row.referring_facility_id);
-  const receiving = get<FacilityRow>("SELECT * FROM facilities WHERE id = ?", row.receiving_facility_id);
-  const events = all<ReferralEvent>(
+  const referring = await get<FacilityRow>("SELECT * FROM facilities WHERE id = ?", row.referring_facility_id);
+  const receiving = await get<FacilityRow>("SELECT * FROM facilities WHERE id = ?", row.receiving_facility_id);
+  const events = await all<ReferralEvent>(
     "SELECT * FROM referral_events WHERE referral_id = ? ORDER BY sequence",
     row.id,
   );
@@ -1383,13 +1388,13 @@ export function trackReferral(referralNumber: string, code: string): TrackingRes
 /* Consent management                                                  */
 /* ------------------------------------------------------------------ */
 
-export function revokeConsent(
+export async function revokeConsent(
   session: Session,
   consentId: string,
   reason: string,
   meta: { ip?: string; userAgent?: string } = {},
-): { ok: boolean; message: string } {
-  const consent = get<ConsentRow>("SELECT * FROM consents WHERE id = ?", consentId);
+): Promise<{ ok: boolean; message: string }> {
+  const consent = await get<ConsentRow>("SELECT * FROM consents WHERE id = ?", consentId);
   if (!consent) return { ok: false, message: "Consent record not found." };
 
   if (session.role === "privacy_auditor") {
@@ -1400,7 +1405,7 @@ export function revokeConsent(
   }
 
   if (consent.referral_id) {
-    const detail = getReferralDetail(consent.referral_id);
+    const detail = await getReferralDetail(consent.referral_id);
     if (detail) {
       const side = viewerSide(session, detail);
       if (side === "observer") return { ok: false, message: "You are not a party to this referral." };
@@ -1408,13 +1413,13 @@ export function revokeConsent(
   }
 
   const now = new Date().toISOString();
-  run("UPDATE consents SET status = 'revoked', revoked_at = ?, revoke_reason = ? WHERE id = ?", now, reason, consentId);
+  await run("UPDATE consents SET status = 'revoked', revoked_at = ?, revoke_reason = ? WHERE id = ?", now, reason, consentId);
 
   if (consent.referral_id) {
-    run("UPDATE referrals SET confidentiality_level = 'highly-restricted', updated_at = ? WHERE id = ?", now, consent.referral_id);
+    await run("UPDATE referrals SET confidentiality_level = 'highly-restricted', updated_at = ? WHERE id = ?", now, consent.referral_id);
   }
 
-  writeAudit({
+  await writeAudit({
     action: "U",
     eventType: "consent",
     eventSubtype: "revoked",
@@ -1436,7 +1441,7 @@ export function revokeConsent(
 }
 
 /** Consent records visible to the session. */
-export function listConsents(session: Session, opts: { patientId?: string; limit?: number } = {}) {
+export async function listConsents(session: Session, opts: { patientId?: string; limit?: number } = {}) {
   const crossFacility = session.role === "hie_admin" || session.role === "privacy_auditor";
   const where: string[] = [];
   const params: unknown[] = [];
@@ -1454,7 +1459,7 @@ export function listConsents(session: Session, opts: { patientId?: string; limit
   }
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  return all<{
+  return await all<{
     id: string;
     patient_id: string;
     referral_id: string | null;
@@ -1505,7 +1510,7 @@ export interface DashboardStats {
   topReasonCodes: Array<{ reason: string; count: number }>;
 }
 
-export function dashboardStats(session: Session): DashboardStats {
+export async function dashboardStats(session: Session): Promise<DashboardStats> {
   const crossFacility = session.role === "hie_admin" || session.role === "privacy_auditor";
   const fid = session.facilityId;
 
@@ -1517,18 +1522,18 @@ export function dashboardStats(session: Session): DashboardStats {
   const scopeParams: unknown[] = crossFacility || !fid ? [] : [fid, fid];
 
   const total =
-    get<{ n: number }>(`SELECT COUNT(*) AS n FROM referrals r WHERE ${scopeWhere}`, ...scopeParams)?.n ?? 0;
+    (await get<{ n: number }>(`SELECT COUNT(*) AS n FROM referrals r WHERE ${scopeWhere}`, ...scopeParams))?.n ?? 0;
 
   const active =
-    get<{ n: number }>(
+    (await get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM referrals r
         WHERE ${scopeWhere}
           AND r.status NOT IN ('closed-feedback','cancelled','rejected','draft')`,
       ...scopeParams,
-    )?.n ?? 0;
+    ))?.n ?? 0;
 
   const awaitingMyAction =
-    get<{ n: number }>(
+    (await get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM referrals r
         WHERE ${scopeWhere}
           AND (
@@ -1538,36 +1543,38 @@ export function dashboardStats(session: Session): DashboardStats {
       ...scopeParams,
       fid ?? "",
       fid ?? "",
-    )?.n ?? 0;
+    ))?.n ?? 0;
 
   const monthStart = new Date();
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
   const completedThisMonth =
-    get<{ n: number }>(
+    (await get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM referrals r
         WHERE ${scopeWhere} AND r.status IN ('completed','closed-feedback') AND r.completed_at >= ?`,
       ...scopeParams,
       monthStart.toISOString(),
-    )?.n ?? 0;
+    ))?.n ?? 0;
 
   const closed =
-    get<{ n: number }>(
+    (await get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM referrals r WHERE ${scopeWhere} AND r.status = 'closed-feedback'`,
       ...scopeParams,
-    )?.n ?? 0;
+    ))?.n ?? 0;
   const delivered =
-    get<{ n: number }>(
+    (await get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM referrals r WHERE ${scopeWhere} AND r.status IN ('completed','closed-feedback')`,
       ...scopeParams,
-    )?.n ?? 0;
+    ))?.n ?? 0;
 
-  const turnaround = all<{ hours: number }>(
-    `SELECT (julianday(r.closed_at) - julianday(r.routed_at)) * 24.0 AS hours
+  const turnaroundRows = await all<{ hours: number }>(
+    `SELECT ${hoursBetween("r.routed_at", "r.closed_at")} AS hours
        FROM referrals r
       WHERE ${scopeWhere} AND r.closed_at IS NOT NULL AND r.routed_at IS NOT NULL`,
     ...scopeParams,
-  )
+  );
+
+  const turnaround = turnaroundRows
     .map((x) => x.hours)
     .filter((h) => Number.isFinite(h) && h >= 0)
     .sort((a, b) => a - b);
@@ -1578,12 +1585,14 @@ export function dashboardStats(session: Session): DashboardStats {
       : Math.round(((turnaround[turnaround.length / 2 - 1] + turnaround[turnaround.length / 2]) / 2) * 10) / 10
     : null;
 
-  const acceptTimes = all<{ hours: number }>(
-    `SELECT (julianday(r.accepted_at) - julianday(r.routed_at)) * 24.0 AS hours
+  const acceptRows = await all<{ hours: number }>(
+    `SELECT ${hoursBetween("r.routed_at", "r.accepted_at")} AS hours
        FROM referrals r
       WHERE ${scopeWhere} AND r.accepted_at IS NOT NULL AND r.routed_at IS NOT NULL`,
     ...scopeParams,
-  )
+  );
+
+  const acceptTimes = acceptRows
     .map((x) => x.hours)
     .filter((h) => Number.isFinite(h) && h >= 0);
 
@@ -1591,7 +1600,7 @@ export function dashboardStats(session: Session): DashboardStats {
     ? Math.round((acceptTimes.reduce((a, b) => a + b, 0) / acceptTimes.length) * 10) / 10
     : null;
 
-  const breakdown = all<{ status: string; n: number }>(
+  const breakdown = await all<{ status: string; n: number }>(
     `SELECT r.status, COUNT(*) AS n FROM referrals r WHERE ${scopeWhere} GROUP BY r.status`,
     ...scopeParams,
   );
@@ -1604,7 +1613,7 @@ export function dashboardStats(session: Session): DashboardStats {
     .sort((a, b) => b.count - a.count);
 
   // Overdue = past its SLA window and not terminal.
-  const pending = all<{ status: string; status_updated_at: string }>(
+  const pending = await all<{ status: string; status_updated_at: string }>(
     `SELECT r.status, r.status_updated_at FROM referrals r
       WHERE ${scopeWhere} AND r.status NOT IN ('closed-feedback','cancelled','rejected','draft','completed')`,
     ...scopeParams,
@@ -1614,19 +1623,29 @@ export function dashboardStats(session: Session): DashboardStats {
     return (Date.now() - new Date(r.status_updated_at).getTime()) / 3_600_000 > target;
   }).length;
 
-  const topReceiving = all<{ name: string; n: number }>(
-    `SELECT rc.name, COUNT(*) AS n
-       FROM referrals r JOIN facilities rc ON rc.id = r.receiving_facility_id
-      WHERE ${scopeWhere}
-      GROUP BY rc.id ORDER BY n DESC LIMIT 5`,
-    ...scopeParams,
-  ).map((x) => ({ name: x.name, count: x.n }));
+  const topReceiving = (
+    await all<{ name: string; n: number }>(
+      // Grouping by rc.name as well as rc.id satisfies Postgres, which requires
+      // every selected column to be grouped or aggregated.
+      `SELECT rc.name, COUNT(*) AS n
+         FROM referrals r JOIN facilities rc ON rc.id = r.receiving_facility_id
+        WHERE ${scopeWhere}
+        GROUP BY rc.id, rc.name ORDER BY n DESC LIMIT 5`,
+      ...scopeParams,
+    )
+  ).map((x) => ({ name: x.name, count: Number(x.n) }));
 
-  const topReasons = all<{ reason_display: string; n: number }>(
-    `SELECT r.reason_display, COUNT(*) AS n FROM referrals r
-      WHERE ${scopeWhere} GROUP BY r.reason_code ORDER BY n DESC LIMIT 5`,
-    ...scopeParams,
-  ).map((x) => ({ reason: x.reason_display, count: x.n }));
+  const topReasons = (
+    await all<{ reason_display: string; n: number }>(
+      // Postgres requires every selected column to appear in the GROUP BY, or be
+      // aggregated. SQLite silently allowed selecting reason_display while
+      // grouping by reason_code. Grouping by both is equivalent here, because
+      // reason_display is functionally dependent on reason_code.
+      `SELECT r.reason_display, COUNT(*) AS n FROM referrals r
+        WHERE ${scopeWhere} GROUP BY r.reason_code, r.reason_display ORDER BY n DESC LIMIT 5`,
+      ...scopeParams,
+    )
+  ).map((x) => ({ reason: x.reason_display, count: Number(x.n) }));
 
   return {
     totalReferrals: total,
@@ -1647,7 +1666,7 @@ export function dashboardStats(session: Session): DashboardStats {
 /* Directory lookups                                                   */
 /* ------------------------------------------------------------------ */
 
-export function listPatients(opts: { search?: string; limit?: number; facilityId?: string | null } = {}) {
+export async function listPatients(opts: { search?: string; limit?: number; facilityId?: string | null } = {}) {
   const where: string[] = ["merged_into IS NULL"];
   const params: unknown[] = [];
   if (opts.search?.trim()) {
@@ -1655,7 +1674,7 @@ export function listPatients(opts: { search?: string; limit?: number; facilityId
     where.push("(family_name LIKE ? OR given_name LIKE ? OR local_mrn LIKE ? OR philhealth_id LIKE ?)");
     params.push(q, q, q, q);
   }
-  return all<PatientRow & { full_name: string }>(
+  return await all<PatientRow & { full_name: string }>(
     `SELECT *, (given_name || ' ' || family_name) AS full_name FROM patients
       WHERE ${where.join(" AND ")}
       ORDER BY family_name, given_name
@@ -1665,14 +1684,14 @@ export function listPatients(opts: { search?: string; limit?: number; facilityId
   );
 }
 
-export function listFacilities(opts: { referring?: boolean; receiving?: boolean; activeOnly?: boolean } = {}) {
+export async function listFacilities(opts: { referring?: boolean; receiving?: boolean; activeOnly?: boolean } = {}) {
   const where: string[] = [];
   if (opts.activeOnly !== false) where.push("active = 1");
   if (opts.referring) where.push("is_referring = 1");
   if (opts.receiving) where.push("is_receiving = 1");
-  return all<FacilityRow & { services: string[] }>(
+  return (await all<FacilityRow & { services: string[] }>(
     `SELECT * FROM facilities ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY name`,
-  ).map((f) => ({ ...f, services: parseServices(f) }));
+  )).map((f) => ({ ...f, services: parseServices(f) }));
 }
 
 function parseServices(f: FacilityRow): string[] {
@@ -1683,17 +1702,17 @@ function parseServices(f: FacilityRow): string[] {
   }
 }
 
-export function listUsers(session: Session) {
+export async function listUsers(session: Session) {
   const crossFacility = session.role === "hie_admin" || session.role === "privacy_auditor";
   if (crossFacility) {
-    return all<UserRow & { facility_name: string | null }>(
+    return await all<UserRow & { facility_name: string | null }>(
       `SELECT u.*, f.name AS facility_name FROM users u
          LEFT JOIN facilities f ON f.id = u.facility_id
         ORDER BY u.full_name`,
     );
   }
   if (!session.facilityId) return [];
-  return all<UserRow & { facility_name: string | null }>(
+  return await all<UserRow & { facility_name: string | null }>(
     `SELECT u.*, f.name AS facility_name FROM users u
        LEFT JOIN facilities f ON f.id = u.facility_id
       WHERE u.facility_id = ?

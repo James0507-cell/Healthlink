@@ -25,14 +25,14 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     return NextResponse.json({ error: "Your role cannot read the FHIR representation." }, { status: 403 });
   }
 
-  const detail = getReferralDetail(id);
+  const detail = await getReferralDetail(id);
   if (!detail) return NextResponse.json({ error: "Referral not found." }, { status: 404 });
 
   const crossFacility = session.role === "hie_admin" || session.role === "privacy_auditor";
   const isParty =
     session.facilityId === detail.referringFacility.id || session.facilityId === detail.receivingFacility.id;
   if (!crossFacility && !isParty) {
-    writeAudit({
+    await writeAudit({
       action: "R",
       eventType: "security",
       eventSubtype: "bundle-export-denied",
@@ -48,9 +48,9 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     return NextResponse.json({ error: "Your facility is not a party to this referral." }, { status: 403 });
   }
 
-  const bundle = bundleForReferral(detail);
+  const bundle = await bundleForReferral(detail);
 
-  writeAudit({
+  await writeAudit({
     action: "R",
     eventType: "export",
     eventSubtype: "bundle-download",

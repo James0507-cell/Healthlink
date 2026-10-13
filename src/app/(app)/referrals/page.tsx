@@ -58,7 +58,7 @@ export default async function ReferralsPage({
   const ACTIVE_VIEW_EXCLUDED = ["draft", "completed", "closed-feedback", "rejected", "cancelled"];
   const useActiveView = tab === "active";
 
-  const { rows: rawRows, total: rawTotal } = listReferrals(session, {
+  const { rows: rawRows, total: rawTotal } = await listReferrals(session, {
     status,
     side,
     search: sp.q,
@@ -73,7 +73,7 @@ export default async function ReferralsPage({
     : rawRows;
   const total = useActiveView ? rows.length : rawTotal;
 
-  const counts = referralCounts(session);
+  const counts = await referralCounts(session);
   const countFor = (s: string) => counts.find((c) => c.status === s)?.n ?? 0;
   const activeCount = counts
     .filter((c) => !["closed-feedback", "cancelled", "rejected", "draft", "completed"].includes(c.status))

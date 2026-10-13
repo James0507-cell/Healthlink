@@ -22,7 +22,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   }
   if (!hasPermission(session, PERMISSIONS.ATTACHMENT_READ)) {
-    writeAudit({
+    await writeAudit({
       action: "R",
       eventType: "security",
       eventSubtype: "attachment-denied",
@@ -39,7 +39,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     return NextResponse.json({ error: "Your role cannot view clinical attachments." }, { status: 403 });
   }
 
-  const row = get<{
+  const row = await get<{
     id: string;
     referral_id: string;
     title: string;
@@ -52,7 +52,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
 
   if (!row) return NextResponse.json({ error: "Attachment not found." }, { status: 404 });
 
-  const detail = getReferralDetail(row.referral_id);
+  const detail = await getReferralDetail(row.referral_id);
   if (!detail) return NextResponse.json({ error: "Referral not found." }, { status: 404 });
 
   const crossFacility = session.role === "hie_admin" || session.role === "privacy_auditor";
@@ -60,7 +60,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     session.facilityId === detail.referringFacility.id || session.facilityId === detail.receivingFacility.id;
 
   if (!crossFacility && !isParty) {
-    writeAudit({
+    await writeAudit({
       action: "R",
       eventType: "security",
       eventSubtype: "attachment-denied",
@@ -81,7 +81,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
 
   // A withdrawn consent blocks further disclosure of the attached documents.
   if (detail.consent?.status === "revoked") {
-    writeAudit({
+    await writeAudit({
       action: "R",
       eventType: "consent",
       eventSubtype: "attachment-blocked",
@@ -103,7 +103,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     );
   }
 
-  writeAudit({
+  await writeAudit({
     action: "R",
     eventType: "read",
     eventSubtype: "attachment-view",

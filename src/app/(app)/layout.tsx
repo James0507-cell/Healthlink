@@ -30,7 +30,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     );
   }
 
-  const { sections, awaitingCount } = buildNav(session);
+  const { sections, awaitingCount } = await buildNav(session);
 
   return (
     <div className="min-h-dvh lg:grid lg:grid-cols-[15.5rem_1fr]">
@@ -97,13 +97,13 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
  *   - "Data governance" (the retention/config surface) folds into Settings
  *   - "Directory" and "Access requests" appear only for the roles that use them
  */
-function buildNav(session: Session): { sections: NavSection[]; awaitingCount: number } {
+async function buildNav(session: Session): Promise<{ sections: NavSection[]; awaitingCount: number }> {
   const can = (p: Permission) => session.permissions.includes(p);
 
   // Live count of work waiting on this user's facility.
   let awaitingCount = 0;
   try {
-    const counts = referralCounts(session);
+    const counts = await referralCounts(session);
     const byStatus = new Map(counts.map((c) => [c.status, c.n]));
     const isCross = session.role === "hie_admin" || session.role === "privacy_auditor";
     for (const [status, n] of byStatus) {

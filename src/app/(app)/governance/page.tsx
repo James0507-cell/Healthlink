@@ -27,49 +27,49 @@ export default async function GovernancePage() {
   // The narrower of the two permissions is sufficient to view this page.
   if (!hasPermission(session, PERMISSIONS.CONFIG_MANAGE) && !hasPermission(session, PERMISSIONS.RETENTION_MANAGE)) redirect("/dashboard");
 
-  const chain = verifyAuditChain();
+  const chain = await verifyAuditChain();
 
-  const attachmentStats = get<{ n: number; bytes: number; oldest: string | null }>(
+  const attachmentStats = await get<{ n: number; bytes: number; oldest: string | null }>(
     "SELECT COUNT(*) AS n, COALESCE(SUM(size_bytes),0) AS bytes, MIN(created_at) AS oldest FROM referral_attachments",
   );
 
   const recordStats = {
-    patients: get<{ n: number }>("SELECT COUNT(*) AS n FROM patients WHERE merged_into IS NULL")?.n ?? 0,
-    referrals: get<{ n: number }>("SELECT COUNT(*) AS n FROM referrals WHERE deleted_at IS NULL")?.n ?? 0,
-    consents: get<{ n: number }>("SELECT COUNT(*) AS n FROM consents")?.n ?? 0,
-    auditEvents: get<{ n: number }>("SELECT COUNT(*) AS n FROM audit_events")?.n ?? 0,
-    fhirResources: get<{ n: number }>("SELECT COUNT(*) AS n FROM fhir_resources")?.n ?? 0,
-    sessions: get<{ n: number }>("SELECT COUNT(*) AS n FROM sessions WHERE revoked_at IS NULL AND expires_at > ?", new Date().toISOString())?.n ?? 0,
+    patients: (await get<{ n: number }>("SELECT COUNT(*) AS n FROM patients WHERE merged_into IS NULL"))?.n ?? 0,
+    referrals: (await get<{ n: number }>("SELECT COUNT(*) AS n FROM referrals WHERE deleted_at IS NULL"))?.n ?? 0,
+    consents: (await get<{ n: number }>("SELECT COUNT(*) AS n FROM consents"))?.n ?? 0,
+    auditEvents: (await get<{ n: number }>("SELECT COUNT(*) AS n FROM audit_events"))?.n ?? 0,
+    fhirResources: (await get<{ n: number }>("SELECT COUNT(*) AS n FROM fhir_resources"))?.n ?? 0,
+    sessions: (await get<{ n: number }>("SELECT COUNT(*) AS n FROM sessions WHERE revoked_at IS NULL AND expires_at > ?", new Date().toISOString()))?.n ?? 0,
   };
 
-  const retentionYears = getSetting("retention.default_years", "7");
-  const attachmentMonths = getSetting("retention.attachments_months", "84");
-  const accessTtl = getSetting("access.default_ttl_hours", "24");
-  const seededAt = getSetting("system.seeded_at", "");
+  const retentionYears = await getSetting("retention.default_years", "7");
+  const attachmentMonths = await getSetting("retention.attachments_months", "84");
+  const accessTtl = await getSetting("access.default_ttl_hours", "24");
+  const seededAt = await getSetting("system.seeded_at", "");
 
   // Records approaching or past their retention date.
-  const dueForReview = all<{ id: string; referral_number: string; retention_until: string }>(
+  const dueForReview = await all<{ id: string; referral_number: string; retention_until: string }>(
     `SELECT id, referral_number, retention_until FROM referrals
       WHERE deleted_at IS NULL AND retention_until IS NOT NULL
       ORDER BY retention_until ASC LIMIT 5`,
   );
 
-  const securityEvents = all<{ event_type: string; n: number }>(
+  const securityEvents = await all<{ event_type: string; n: number }>(
     `SELECT event_type, COUNT(*) AS n FROM audit_events
       WHERE outcome <> '0' GROUP BY event_type ORDER BY n DESC LIMIT 6`,
   );
 
-  const failedLogins = all<{ n: number }>(
+  const failedLogins = (await all<{ n: number }>(
     "SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'login' AND outcome <> '0' AND occurred_at > ?",
     new Date(Date.now() - 30 * 86_400_000).toISOString(),
-  )[0]?.n ?? 0;
+  ))[0]?.n ?? 0;
 
-  const deniedAccess = all<{ n: number }>(
+  const deniedAccess = (await all<{ n: number }>(
     `SELECT COUNT(*) AS n FROM audit_events
       WHERE event_subtype IN ('facade-scope-denied','authorisation-denied','attachment-denied','bundle-export-denied')
         AND occurred_at > ?`,
     new Date(Date.now() - 30 * 86_400_000).toISOString(),
-  )[0]?.n ?? 0;
+  ))[0]?.n ?? 0;
 
   return (
     <>

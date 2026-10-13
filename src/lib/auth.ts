@@ -275,7 +275,7 @@ export async function createSession(
   | { ok: true; token: string; sessionId: string; user: SessionUser }
   | { ok: false; reason: "invalid-credentials" | "inactive" | "locked"; message: string }
 > {
-  const row = get<{
+  const row = await get<{
     id: string;
     email: string;
     password_salt: string;
@@ -305,8 +305,8 @@ export async function createSession(
   if (!verifyPassword(password, row.password_salt, row.password_hash)) {
     const failed = (row.failed_logins ?? 0) + 1;
     const lockUntil = failed >= 5 ? new Date(Date.now() + 15 * 60 * 1000).toISOString() : null;
-    run("UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?", failed, lockUntil, row.id);
-    writeAudit({
+    await run("UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?", failed, lockUntil, row.id);
+    await writeAudit({
       action: "E",
       eventType: "login",
       eventSubtype: "failed",
@@ -323,7 +323,7 @@ export async function createSession(
   }
 
   if (!row.active) {
-    writeAudit({
+    await writeAudit({
       action: "E",
       eventType: "login",
       eventSubtype: "rejected",
@@ -338,14 +338,14 @@ export async function createSession(
   }
 
   const facility = row.facility_id
-    ? get<{ name: string }>("SELECT name FROM facilities WHERE id = ?", row.facility_id)
+    ? await get<{ name: string }>("SELECT name FROM facilities WHERE id = ?", row.facility_id)
     : undefined;
 
   const sessionId = newId("ses");
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_HOURS * 3600 * 1000);
 
-  run(
+  await run(
     "INSERT INTO sessions (id, user_id, created_at, expires_at, ip_address, user_agent) VALUES (?,?,?,?,?,?)",
     sessionId,
     row.id,
@@ -355,7 +355,7 @@ export async function createSession(
     meta.userAgent ?? null,
   );
 
-  run("UPDATE users SET last_login_at = ?, failed_logins = 0, locked_until = NULL WHERE id = ?", now.toISOString(), row.id);
+  await run("UPDATE users SET last_login_at = ?, failed_logins = 0, locked_until = NULL WHERE id = ?", now.toISOString(), row.id);
 
   const user: SessionUser = {
     id: row.id,
@@ -384,7 +384,7 @@ export async function createSession(
     .setAudience("healthlink-app")
     .sign(SECRET);
 
-  writeAudit({
+  await writeAudit({
     action: "E",
     eventType: "login",
     eventSubtype: "success",
@@ -404,9 +404,9 @@ export async function createSession(
 }
 
 export async function destroySession(sessionId: string, actor?: SessionUser) {
-  run("UPDATE sessions SET revoked_at = ? WHERE id = ?", new Date().toISOString(), sessionId);
+  await run("UPDATE sessions SET revoked_at = ? WHERE id = ?", new Date().toISOString(), sessionId);
   if (actor) {
-    writeAudit({
+    await writeAudit({
       action: "E",
       eventType: "logout",
       actorUserId: actor.id,
@@ -433,7 +433,7 @@ export async function getSession(): Promise<Session | null> {
     const sid = payload.sid as string | undefined;
     if (!sid) return null;
 
-    const row = get<{ revoked_at: string | null; expires_at: string }>(
+    const row = await get<{ revoked_at: string | null; expires_at: string }>(
       "SELECT revoked_at, expires_at FROM sessions WHERE id = ?",
       sid,
     );
@@ -616,7 +616,7 @@ export async function guard(permission: Permission): Promise<Session> {
 }
 
 export async function auditFor(session: Session, input: Omit<AuditInput, "actorUserId" | "actorName" | "actorRole" | "actorFacility">) {
-  return writeAudit({
+  return await writeAudit({
     ...input,
     actorUserId: session.id,
     actorName: session.fullName,
@@ -626,8 +626,8 @@ export async function auditFor(session: Session, input: Omit<AuditInput, "actorU
 }
 
 /** List active sessions for a user (for the security page). */
-export function activeSessions(userId: string) {
-  return all<{ id: string; created_at: string; expires_at: string; ip_address: string | null; user_agent: string | null; revoked_at: string | null }>(
+export async function activeSessions(userId: string) {
+  return await all<{ id: string; created_at: string; expires_at: string; ip_address: string | null; user_agent: string | null; revoked_at: string | null }>(
     "SELECT * FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 20",
     userId,
   );

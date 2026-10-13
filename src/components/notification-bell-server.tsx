@@ -10,7 +10,7 @@ export async function NotificationBell({ awaitingCount }: { awaitingCount: numbe
 
   let items: NotificationItem[] = [];
   try {
-    const { rows } = listReferrals(session, { side: "all", limit: 40, includeDrafts: false });
+    const { rows } = await listReferrals(session, { side: "all", limit: 40, includeDrafts: false });
     const isCross = session.role === "hie_admin" || session.role === "privacy_auditor";
 
     items = rows

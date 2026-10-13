@@ -1,23 +1,63 @@
 /**
  * Seed / reset the HealthLink database.
  *
+ * Uses whichever backend DATABASE_URL selects:
+ *   unset        -> SQLite at data/healthlink.db (or HEALTHLINK_DB)
+ *   postgres://  -> that Postgres database
+ *
+ * `.env.local` is loaded when present, so `npm run db:reset` targets the same
+ * database that `npm run dev` will use, without exporting anything by hand.
+ *
  * Usage:
- *   npm run db:reset     # delete and re-seed with synthetic demo data
- *   node scripts/db-reset.mjs
+ *   npm run db:reset
+ *
+ * On SQLite this replaces the file. On Postgres it deletes and re-inserts the
+ * demo rows, so the schema is left in place.
  */
 
-import { resetAndSeed, seed, DEMO_PASSWORD, FACILITIES, USERS, PATIENTS, SCENARIOS } from "../src/lib/seed.ts";
-import { migrate } from "../src/lib/db.ts";
+import { readFileSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 
-const reset = process.argv.includes("--reset") || true;
+// `--sqlite` forces SQLite even when DATABASE_URL is present. Useful for
+// regenerating the local demo database without touching a deployed one.
+const forceSqlite = process.argv.includes("--sqlite");
+
+// Load .env.local before importing db.ts, so dialect() sees DATABASE_URL.
+if (!forceSqlite) {
+  try {
+    for (const line of readFileSync(".env.local", "utf8").split("\n")) {
+      const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+      if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].trim();
+    }
+  } catch {
+    /* no .env.local — SQLite will be used */
+  }
+} else {
+  // Clear any inherited value so the dialect resolves to SQLite.
+  delete process.env.DATABASE_URL;
+}
+
+const { migrate, dialect, dbPath, closeDb } = await import("../src/lib/db.ts");
+const { resetAndSeed, DEMO_PASSWORD } = await import("../src/lib/seed.ts");
 
 console.log("HealthLink - database setup\n");
+console.log(`Backend: ${dialect()}${dialect() === "sqlite" ? ` (${dbPath()})` : ""}${forceSqlite ? " [forced]" : ""}`);
 
-migrate();
+// A stale SQLite file would not have later columns (such as audit_events.seq).
+// Removing it lets migrate() recreate the schema cleanly.
+if (dialect() === "sqlite" && existsSync(dbPath())) {
+  try {
+    unlinkSync(dbPath());
+    console.log("Removed the existing SQLite file so the schema is recreated.");
+  } catch {
+    /* locked; migrate() will handle what it can */
+  }
+}
+
+await migrate();
 console.log("[1/2] Schema created (or already present).");
 
-const summary = reset ? resetAndSeed() : seed();
-
+const summary = await resetAndSeed();
 console.log("[2/2] Synthetic demo data loaded.\n");
 console.log("  Facilities        :", summary.facilities);
 console.log("  Users             :", summary.users);
@@ -43,3 +83,5 @@ console.log("  Receiving    internist@dmgmc.example.ph       Dr. Fernando Gonzal
 console.log("  Governance   admin@healthlink.example.ph      HIE administrator");
 console.log("  Governance   auditor@healthlink.example.ph    Privacy / compliance auditor");
 console.log("\nAll data is synthetic. No real patient or provider information is used.");
+
+await closeDb();

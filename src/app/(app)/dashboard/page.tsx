@@ -39,12 +39,12 @@ export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const session = await requirePageSession();
-  const stats = dashboardStats(session);
-  const counts = referralCounts(session);
+  const stats = await dashboardStats(session);
+  const counts = await referralCounts(session);
   const isAuditor = session.role === "privacy_auditor";
 
   // Work that is genuinely waiting on this user's facility, most urgent first.
-  const awaiting = listReferrals(session, { side: "all", limit: 30, includeDrafts: false }).rows
+  const awaiting = (await listReferrals(session, { side: "all", limit: 30, includeDrafts: false })).rows
     .filter((r) => {
       const def = STATES[r.status as ReferralState];
       if (!def || def.isTerminal || def.awaiting === "none") return false;
@@ -61,15 +61,15 @@ export default async function DashboardPage() {
       return new Date(a.status_updated_at).getTime() - new Date(b.status_updated_at).getTime();
     });
 
-  const recent = listReferrals(session, { side: "all", limit: 6, includeDrafts: false }).rows;
+  const recent = (await listReferrals(session, { side: "all", limit: 6, includeDrafts: false })).rows;
   const overdue = awaiting.filter((r) => slaStatus(r.status as ReferralState, r.status_updated_at).overdue);
 
   // Referrals received vs sent, for the at-a-glance split.
   const receivedCount = session.facilityId
-    ? listReferrals(session, { side: "receiving", limit: 1, includeDrafts: false }).total
+    ? (await listReferrals(session, { side: "receiving", limit: 1, includeDrafts: false })).total
     : 0;
   const sentCount = session.facilityId
-    ? listReferrals(session, { side: "referring", limit: 1, includeDrafts: false }).total
+    ? (await listReferrals(session, { side: "referring", limit: 1, includeDrafts: false })).total
     : 0;
 
   return (
