@@ -99,6 +99,11 @@ spanning the workflow, with a hash-chained audit history. Facility names are fic
 PSGC geographic codes are real. If you add a referral scenario, give it a plausible clinical story —
 the dataset exists to be read by clinicians during evaluation.
 
+The mock data is **generated, not committed as a database**. A clone runs `npm run db:reset` to build
+`data/healthlink.db` from the seeder. Do not commit that file — `.gitignore` excludes it. Inspect
+what the seeder defines with `npm run demo:data`, and what a built database contains with
+`npm run demo:state`.
+
 ## Environment
 
 `HEALTHLINK_SECRET` — session JWT signing key. Falls back to a development default; required in any

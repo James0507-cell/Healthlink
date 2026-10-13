@@ -174,6 +174,24 @@ composites. Davao City geographic codes (PSGC) are real public codes so that add
 exercised correctly. Referral figures illustrate the reporting capability; they are not findings
 about referral practice in Davao City.
 
+### Where the demo data lives
+
+The database file is **not committed**. It is generated from `src/lib/seed.ts`, which is committed.
+A clone therefore starts with no data until you seed it:
+
+```bash
+npm run db:reset    # builds data/healthlink.db from the seeder
+npm run demo:data   # what the seeder defines (counts and codes)
+npm run demo:state  # what a built database contains, with referral numbers and tracking codes
+```
+
+The seeder defines 6 facilities, 18 staff accounts, 8 patients and 6 referral scenarios spanning the
+workflow, plus 39 hash-chained audit events. Referral numbers and tracking codes are deterministic,
+so the values quoted in `docs/EVALUATION-SCENARIO.md` stay valid across reseeds.
+
+This arrangement keeps the repository small and reviewable: a reader can see exactly what synthetic
+data the prototype uses by reading one file, rather than inferring it from a binary database.
+
 ---
 
 ## Privacy

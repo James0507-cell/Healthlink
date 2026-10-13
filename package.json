@@ -12,6 +12,7 @@
     "test": "tsx scripts/test-fhir.mts",
     "test:fhir": "tsx scripts/test-fhir.mts",
     "demo:state": "tsx scripts/dump-demo-state.mts",
+    "demo:data": "tsx scripts/report-seed-data.mts",
     "terminology:check": "tsx scripts/check-terminology.mts"
   },
   "dependencies": {
